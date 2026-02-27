@@ -1,0 +1,42 @@
+{
+  "name": "ironbound",
+  "version": "0.1.0",
+  "description": "Ironbound desktop prototype wrapper",
+  "main": "main.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dev:web": "python3 -m http.server 4173",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.ironbound.prototype",
+    "productName": "Ironbound",
+    "files": [
+      "index.html",
+      "README.md",
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

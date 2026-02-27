@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ironbound — Master Plan Build v6</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,system-ui,sans-serif; background:#0d1016; color:#e7ecf7; display:grid; grid-template-columns:340px 1fr 380px; height:100vh; }
+    .panel { overflow:auto; padding:12px; border-right:1px solid #273043; }
+    .right { border-right:none; border-left:1px solid #273043; }
+    .card { background:#131b29; border:1px solid #2f3f5b; border-radius:8px; padding:8px; margin-bottom:8px; }
+    .row { display:flex; justify-content:space-between; gap:8px; }
+    .muted { color:#98a5bc; }
+    h1,h2,h3 { margin:8px 0; }
+    #toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px; border-bottom:1px solid #273043; }
+    button,select,input { background:#1a2538; color:#e0e7f8; border:1px solid #384a68; border-radius:6px; padding:6px 10px; }
+    input[type='number'] { width:140px; }
+    canvas { display:block; width:100%; height:calc(100vh - 68px); image-rendering:pixelated; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#2d3a54; font-size:11px; margin-right:6px; }
+    ul { margin:6px 0; padding-left:16px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  </style>
+</head>
+<body>
+  <aside class="panel">
+    <h1>IRONBOUND</h1>
+    <div class="muted">Master-plan alignment build v6</div>
+    <div class="card">
+      <div class="row"><strong>Day</strong><span id="day"></span></div>
+      <div class="row"><strong>Age</strong><span id="age"></span></div>
+      <div class="row"><strong>Civilization</strong><span id="civ"></span></div>
+      <div class="row"><strong>Stability Mean</strong><span id="stabilityMean"></span></div>
+      <div class="row"><strong>War Exhaustion</strong><span id="warExMean"></span></div>
+      <div class="row"><strong>Trade Reliability</strong><span id="tradeMean"></span></div>
+      <div class="row"><strong>Gen Time</strong><span id="genMs"></span></div>
+      <div class="row"><strong>Apex Active</strong><span id="apex"></span></div>
+      <div class="row"><strong>Provinces</strong><span id="provinceCount"></span></div>
+      <div class="row"><strong>Factions</strong><span id="factionCount"></span></div>
+      <div class="row"><strong>Actors</strong><span id="actorCount"></span></div>
+      <div class="row"><strong>Wars</strong><span id="warCount"></span></div>
+      <div class="row"><strong>Contracts</strong><span id="contractCount"></span></div>
+    </div>
+    <h3>Legend</h3>
+    <div class="card" id="legend"></div>
+    <h3>Event Chains</h3>
+    <div id="chains"></div>
+    <h3>Rumors</h3>
+    <div id="rumors"></div>
+  </aside>
+
+  <main>
+    <div id="toolbar">
+      <button id="regen">Regenerate</button>
+      <button id="pause">Pause</button>
+      <button id="step">+1 Day</button>
+      <button id="step30">+30 Days</button>
+      <button id="export">Export Snapshot</button>
+      <button id="import">Import Snapshot</button>
+      <input id="seedInput" type="number" />
+      <button id="applySeed">Use Seed</button>
+      <select id="overlay">
+        <option value="terrain">Terrain/Biome</option>
+        <option value="elevation">Elevation</option>
+        <option value="rivers">Rivers/Lakes/Swamps</option>
+        <option value="provinces">Provinces</option>
+        <option value="political">Political</option>
+        <option value="warfront">Warfront</option>
+        <option value="trade">Trade Reliability</option>
+        <option value="danger">Danger Heat</option>
+        <option value="faith">Faith</option>
+        <option value="arcane">Arcane</option>
+        <option value="contracts">Contract Density</option>
+      </select>
+      <label class="muted">Days/s <input id="speed" type="range" min="1" max="40" value="10" /></label>
+      <span class="muted">Zoom changes LOD: strategic / regional / local.</span>
+    </div>
+    <canvas id="map" width="1200" height="960"></canvas>
+  </main>
+
+  <aside class="panel right">
+    <h2>Chronicle</h2>
+    <div id="chronicle"></div>
+    <h2>Proclamations</h2>
+    <div id="proclamations"></div>
+    <h2>Travel Encounters</h2>
+    <div id="encounters"></div>
+    <h2>Wars</h2>
+    <div id="wars"></div>
+    <h2>Contracts</h2>
+    <div id="contracts"></div>
+    <h2>Province Detail</h2>
+    <div id="province"></div>
+  </aside>
+
+<script>
+(() => {
+  const SIZE=384, CELLS=SIZE*SIZE;
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  const biomeNames=['Tundra','Boreal','Snowcap','Steppe','Temperate Forest','Swamp','Desert','Plains','Coastal Marsh','Badlands','Savanna','Delta'];
+  const classList=['River Valley','Coastal Port','Highland Bastion','Desert Basin','Swamp Marsh','Frontier Wild','Trade Hub','Imperial Core','Mountain Pass','Pirate Coast','Ruined Kingdom','Holy Sanctuary','Arcane Nexus','Undead Blight','Beast Dominion','Cataclysm Scar','Salt Steppe','Blackwood','Ash March'];
+  const resources=['Grain','Timber','Iron','Stone','Livestock','Salt','Silver','Arcane Reagent','Faith Relic','Exotic Trade'];
+  const settlementTypes=['hamlet','village','town','city','capital','fortress','monastery','port','ruin'];
+
+  const EVENT_TYPES=['Dragon Attack','Necromancer Ritual','House Betrayal','Crimson Plague','Faith Schism','Port Siege','Relic Hunt','Blackwood Howl','Ash March Rising','Salt Road Collapse','Great Flood','Succession Crisis','Cult Purge','Leviathan Sighted','Arcane Storm','Famine Year','Pilgrim Crusade','Bandit Kingdom','Demon Whisper','Harvest Miracle'];
+
+  const DEITIES={
+    flame:{name:'The Flame',domain:'Purification',color:'#c84020'}, war:{name:'The Iron Crown',domain:'Conquest',color:'#8a2020'},
+    harvest:{name:'The Green Mother',domain:'Growth',color:'#3a8a20'}, sea:{name:'The Deep',domain:'Depth',color:'#205a8a'},
+    decay:{name:'The Rot',domain:'Decay',color:'#4a3a20'}, shadow:{name:'The Veil',domain:'Secrets',color:'#2a2a3a'},
+    storm:{name:'The Gale',domain:'Sky',color:'#6070a0'}, stone:{name:'The Mountain',domain:'Endurance',color:'#6a6a5a'}
+  };
+
+  const CULTURE_NAMES={
+    imperial:{first:['Aldric','Varen','Cassian','Lysara','Helena'],house:['Varnoth','Steelhart','Ironhold']},
+    riverfolk:{first:['Willem','Arna','Maren','Petra'],house:['van Rijn','Stonebridge']}, marcher:{first:['Rowan','Isolde','Cormac','Brynn'],house:['Greymane','Ravenscar']},
+    steppe:{first:['Ghan','Sarai','Temur','Bolga'],house:['Salt Wind','Red Horse']}, coastal:{first:['Corso','Vela','Nikos','Mira'],house:['Blackshore','Saltblood']},
+    elven:{first:['Thalindra','Aelwin','Caelith'],house:['Moonveil','Starweaver']}, dwarven:{first:['Durin','Brokka','Thrain'],house:['Ironvein','Hammerfall']},
+    beast:{first:['Grakk','Nakkra','Urgash'],house:['Howler','Mudwalker']}, fallen_light:{first:['Solarius','Auriel','Luminara'],house:['Dawnshatter']},
+    ashland:{first:['Kael','Smeltra','Vulkan'],house:['Ashborn','Cinderfist']}, deepwater:{first:['Thaloss','Nereia','Abyssia'],house:['Deepcurrent','Tidesinger']}
+  };
+  const CULTURES=Object.keys(CULTURE_NAMES);
+  const APEX_ROSTER=['Ancient Dragon','Demon Prince','Titan Beast','Lich Regent','Leviathan','The Black Hart','The Ash Seraph'];
+
+  function makeRng(seed){ let s=seed>>>0; return ()=>((s=(s*1664525+1013904223)>>>0)/4294967296); }
+  const hash2=(x,y,s)=>{ let h=((x*374761393)^(y*668265263)^(s*2246822519))|0; h=(h^(h>>>13))*1274126177; return ((h^(h>>>16))>>>0)/4294967295; };
+  const smooth=t=>t*t*(3-2*t);
+  function noise2(x,y,seed){ const x0=Math.floor(x),y0=Math.floor(y),xf=x-x0,yf=y-y0; const s=hash2(x0,y0,seed),t=hash2(x0+1,y0,seed),u=hash2(x0,y0+1,seed),v=hash2(x0+1,y0+1,seed); return lerp(lerp(s,t,smooth(xf)),lerp(u,v,smooth(xf)),smooth(yf)); }
+  function fbm(x,y,seed,oct=5){ let a=0.5,f=1,sum=0,n=0; for(let i=0;i<oct;i++){ sum+=noise2(x*f,y*f,seed+i*31)*a; n+=a; a*=0.5; f*=2; } return sum/n; }
+  const pick=(arr,t)=>arr[Math.floor(t*arr.length)%arr.length];
+
+  const state={seed:(Date.now()&0xffffffff)>>>0,rng:null,world:null,day:1,paused:false,overlay:'terrain',speed:10,accum:0,cam:{x:0,y:0,zoom:2.3,drag:false,lastX:0,lastY:0},selectedProvince:null,provinceById:new Map(),factionById:new Map(),offscreen:document.createElement('canvas')};
+
+  const NARRATIVE_TEMPLATES={
+    battle:['{province} burns with banners and ash.','Steel rings through {province} as lines break.','Wounded levies limp from {province}.'],
+    faith:['Processions fill {province} beneath sacred hymns.','A prophet in {province} declares a cleansing dawn.','Shrines in {province} glow through the night.'],
+    arcane:['Sigils flare over {province} and livestock panic.','Whispering lights drift above {province}.','A tower in {province} hums with unstable force.'],
+    crisis:['Refugees clog the roads from {province}.','Grain stores in {province} run thin.','A fever grips villages in {province}.']
+  };
+
+  function nameForCulture(culture,rng){ const p=CULTURE_NAMES[culture]||CULTURE_NAMES.imperial; return `${pick(p.first,rng())} ${pick(p.house,rng())}`; }
+
+  function generateWorld(seed){
+    const w={height:new Float32Array(CELLS),water:new Uint8Array(CELLS),flow:new Float32Array(CELLS),rivers:new Uint8Array(CELLS),lakes:new Uint8Array(CELLS),swamps:new Uint8Array(CELLS),temp:new Float32Array(CELLS),moisture:new Float32Array(CELLS),biome:new Uint8Array(CELLS),provinceMap:new Int16Array(CELLS),provinces:[],factions:[],actors:[],contracts:[],wars:[],tradeGraph:{nodes:[],edges:[]},chronicle:[],rumors:[],eventChains:[],proclamations:[],encounters:[],worldAge:'Young',ageScore:50,civilizationScore:50,stabilityMean:50,warExhaustionMean:0,tradeReliabilityMean:0.7,warFrequency:20,meanArcane:50,meanFaith:50,cataclysmCount:0,apexActivityIndex:0,apexActive:[],claimsPressure:30,genMs:0,genTimings:{}};
+    const t0=performance.now();
+    let t=performance.now(); genTectonics(seed,w); w.genTimings.tectonics=(performance.now()-t).toFixed(1);
+    t=performance.now(); genHydrology(seed,w); w.genTimings.hydrology=(performance.now()-t).toFixed(1);
+    t=performance.now(); genClimate(seed,w); w.genTimings.climate=(performance.now()-t).toFixed(1);
+    t=performance.now(); genProvinces(seed,w); w.genTimings.provinces=(performance.now()-t).toFixed(1);
+    t=performance.now(); genResources(seed,w); w.genTimings.resources=(performance.now()-t).toFixed(1);
+    t=performance.now(); genFactions(seed,w); w.genTimings.factions=(performance.now()-t).toFixed(1);
+    t=performance.now(); genSettlementsTrade(seed,w); w.genTimings.settlements=(performance.now()-t).toFixed(1);
+    t=performance.now(); genActors(seed,w); w.genTimings.actors=(performance.now()-t).toFixed(1);
+    t=performance.now(); genWars(seed,w); w.genTimings.wars=(performance.now()-t).toFixed(1);
+    t=performance.now(); genEcology(seed,w); w.genTimings.ecology=(performance.now()-t).toFixed(1);
+    t=performance.now(); genEventChains(seed,w); w.genTimings.chains=(performance.now()-t).toFixed(1);
+    t=performance.now(); genContracts(seed,w); w.genTimings.contracts=(performance.now()-t).toFixed(1);
+    w.genMs=(performance.now()-t0).toFixed(1);
+    w.chronicle.unshift(`Day 1: Ironbound forms with ${w.provinces.length} provinces, ${w.factions.length} factions, and ${w.actors.length} named actors.`);
+    w.proclamations.unshift(`By decree of the high banners, all roads are surveyed and levies counted.`);
+    w.encounters.unshift(`A salt-stained caravan master offers warnings of ambushes beyond the next pass.`);
+    w.rumors=genRumors(w,1,seed);
+    return w;
+  }
+
+  function genTectonics(seed,w){
+    const plates=5+(seed%3), pts=[]; for(let i=0;i<plates;i++) pts.push({x:(hash2(i,1,seed)*SIZE)|0,y:(hash2(i,2,seed)*SIZE)|0,e:hash2(i,3,seed)});
+    for(let y=0;y<SIZE;y++) for(let x=0;x<SIZE;x++){ const i=y*SIZE+x; let d1=1e9,d2=1e9,p=0; for(let k=0;k<pts.length;k++){ const dx=x-pts[k].x,dy=y-pts[k].y,d=dx*dx+dy*dy; if(d<d1){d2=d1;d1=d;p=k;} else if(d<d2) d2=d; }
+      const boundary=clamp((Math.sqrt(d2)-Math.sqrt(d1))/7,0,1), shelf=1-Math.hypot(x/SIZE-0.5,y/SIZE-0.5)*1.35, detail=fbm(x/56,y/56,seed,5), arc=Math.pow(1-boundary,2)*0.22;
+      const h=clamp(shelf*0.56+detail*0.34+arc+pts[p].e*0.1,0,1); w.height[i]=h; w.water[i]=h<0.28?1:0; }
+  }
+
+  function genHydrology(seed,w){
+    const dirs=[-1,1,-SIZE,SIZE,-SIZE-1,-SIZE+1,SIZE-1,SIZE+1], order=[]; for(let i=0;i<CELLS;i++) if(!w.water[i]) order.push(i); order.sort((a,b)=>w.height[b]-w.height[a]);
+    for(const i of order){ w.flow[i]+=1; const x=i%SIZE,y=(i/SIZE)|0; let best=i,h=w.height[i];
+      for(const d of dirs){ const n=i+d,nx=x+((d===-1||d===-SIZE-1||d===SIZE-1)?-1:(d===1||d===-SIZE+1||d===SIZE+1)?1:0),ny=y+(d<-1?-1:d>1?1:0); if(nx<0||ny<0||nx>=SIZE||ny>=SIZE||n<0||n>=CELLS) continue; if(w.height[n]<h){h=w.height[n]; best=n;} }
+      if(best!==i) w.flow[best]+=w.flow[i]; if(w.flow[i]>115&&w.height[i]>0.3) w.rivers[i]=1; if(best===i&&w.height[i]>0.3&&w.height[i]<0.5) w.lakes[i]=1; if(w.height[i]>0.3&&w.height[i]<0.48&&w.flow[i]>35&&fbm(x/24,y/24,seed+78)>0.65) w.swamps[i]=1;
+    }
+  }
+
+  function genClimate(seed,w){
+    for(let y=0;y<SIZE;y++) for(let x=0;x<SIZE;x++){ const i=y*SIZE+x,lat=Math.abs((y/(SIZE-1))*2-1); const t=clamp((1-lat)*0.95-w.height[i]*0.42+fbm(x/80,y/80,seed+211)*0.15,0,1); const ocean=clamp(1-Math.min(x,y,SIZE-1-x,SIZE-1-y)/(SIZE*0.35),0,1)*0.2; const m=clamp(ocean+(w.rivers[i]?0.2:0)+fbm((x+32)/70,y/70,seed+312)*0.8-w.height[i]*0.18,0,1); w.temp[i]=t; w.moisture[i]=m; if(w.water[i]){ w.biome[i]=255; continue; } const tb=t<0.28?0:t<0.5?1:t<0.73?2:3, mb=m<0.33?0:m<0.66?1:2; w.biome[i]=tb*3+mb; }
+  }
+
+  function genProvinces(seed,w){
+    const target=90+(seed%30), seeds=[]; for(let i=0;i<target*5&&seeds.length<target;i++){ const x=(hash2(i,9,seed)*SIZE)|0,y=(hash2(i,10,seed)*SIZE)|0,idx=y*SIZE+x; if(w.water[idx]||w.height[idx]>0.86||w.biome[idx]===2||w.biome[idx]===6) continue; if(w.rivers[idx]||w.moisture[idx]>0.5||hash2(i,11,seed)>0.6) seeds.push({x,y,id:seeds.length}); }
+    w.provinceMap.fill(-1); const q=[]; for(const s of seeds){ const i=s.y*SIZE+s.x; w.provinceMap[i]=s.id; q.push(i); }
+    const dirs=[-1,1,-SIZE,SIZE]; while(q.length){ const i=q.shift(), p=w.provinceMap[i], x=i%SIZE,y=(i/SIZE)|0; for(const d of dirs){ const n=i+d,nx=x+(d===-1?-1:d===1?1:0),ny=y+(d===-SIZE?-1:d===SIZE?1:0); if(nx<0||ny<0||nx>=SIZE||ny>=SIZE||n<0||n>=CELLS) continue; if(w.water[n]||w.provinceMap[n]!==-1) continue; const terrain=w.height[n]>0.72?0.2:biomeNames[w.biome[n]]==='Temperate Forest'?0.75:1; if(hash2(n,p,seed)<terrain){ w.provinceMap[n]=p; q.push(n);} }}
+    const raw=Array.from({length:seeds.length},(_,id)=>({id,cells:0,sx:0,sy:0,neighbors:new Set(),avgElevation:0,avgTemp:0,avgMoisture:0,riverDensity:0,faith:0,arcane:0,danger:0}));
+    for(let i=0;i<CELLS;i++){ const p=w.provinceMap[i]; if(p<0) continue; const r=raw[p],x=i%SIZE,y=(i/SIZE)|0; r.cells++; r.sx+=x; r.sy+=y; r.avgElevation+=w.height[i]; r.avgTemp+=w.temp[i]; r.avgMoisture+=w.moisture[i]; r.riverDensity+=(w.rivers[i]?1:0); r.faith+=Math.floor(clamp(w.moisture[i]*78+hash2(i,p,seed+333)*22,0,100)); r.arcane+=Math.floor(clamp(fbm(x/22,y/22,seed+623)*100,0,100)); r.danger+=(w.biome[i]===6||w.biome[i]===9)?0.9:(w.swamps[i]?0.7:0.24); }
+    const dirs8=[-1,1,-SIZE,SIZE,-SIZE-1,-SIZE+1,SIZE-1,SIZE+1]; for(let i=0;i<CELLS;i++){ const p=w.provinceMap[i]; if(p<0) continue; for(const d of dirs8){ const n=i+d; if(n<0||n>=CELLS) continue; const np=w.provinceMap[n]; if(np>=0&&np!==p) raw[p].neighbors.add(np); }}
+    w.provinces=raw.filter(p=>p.cells>35).map((p,id)=>{ const c=Math.max(1,p.cells); const obj={id,sourceId:p.id,name:`${pick(['North','South','East','West','Iron','Black','Green','Ash'],hash2(p.id,1,seed))} ${pick(['March','Ford','Reach','Vale','Ward','Hollow','Moors'],hash2(p.id,2,seed))}`,centerX:(p.sx/c)|0,centerY:(p.sy/c)|0,neighborIds:[],classification:pick(classList,hash2(p.id,3,seed)),biomeType:biomeNames[(p.id*7)%biomeNames.length],avgElevation:p.avgElevation/c,avgTemp:p.avgTemp/c,avgMoisture:p.avgMoisture/c,riverDensity:p.riverDensity/c,lakePresence:p.riverDensity/c>0.04,coastal:p.avgElevation/c<0.38,primaryResource:pick(resources,hash2(p.id,4,seed)),secondaryResources:[pick(resources,hash2(p.id,5,seed)),pick(resources,hash2(p.id,6,seed))],population:700+Math.floor(c*0.9),settlementTier:0,settlements:[],infrastructure:0,prosperity:0,tradeValue:0,portNode:false,tradeNode:false,roadFactor:0,factionOwnerId:0,stability:0,unrest:0,contested:false,contestedDays:0,occupied:false,lawless:false,garrisonStrength:0,militiaPotential:0,faithStrength:(p.faith/c)|0,divineAlignment:Object.keys(DEITIES)[(hash2(p.id,7,seed)*8)|0],arcaneSaturation:(p.arcane/c)|0,danger:clamp(Math.floor((p.danger/c)*100),0,100),monsterPresence:false,travelCostBase:0,activeEvents:[],stationedActors:[],availableContracts:[],contractLoad:0,atmosphere:''};
+      obj.settlementTier=clamp(Math.floor((obj.avgMoisture+obj.riverDensity+(obj.coastal?0.2:0))*3),0,5); obj.infrastructure=clamp(18+obj.settlementTier*14+Math.floor(obj.riverDensity*28),0,100); obj.prosperity=clamp(28+Math.floor(obj.infrastructure*0.57)-Math.floor(obj.danger*0.25),0,100); obj.tradeValue=Math.floor((obj.infrastructure+obj.prosperity)*(0.6+obj.riverDensity)); obj.portNode=obj.coastal; obj.tradeNode=obj.settlementTier>=2; obj.roadFactor=clamp((obj.infrastructure+obj.tradeValue*0.01)/100,0,1); obj.stability=clamp(35+obj.infrastructure-obj.danger,0,100); obj.unrest=100-obj.stability; obj.monsterPresence=obj.danger>55; obj.garrisonStrength=Math.floor(20+obj.stability*0.45); obj.militiaPotential=Math.floor(10+obj.population*0.01); obj.travelCostBase=Math.floor(8+obj.avgElevation*20+(obj.classification==='Mountain Pass'?10:0)); return obj; });
+    const remap=new Map(w.provinces.map(p=>[p.sourceId,p.id])); for(let i=0;i<CELLS;i++){ const s=w.provinceMap[i]; w.provinceMap[i]=remap.has(s)?remap.get(s):-1; } for(const p of w.provinces){ const r=raw[p.sourceId]; p.neighborIds=[...r.neighbors].map(n=>remap.get(n)).filter(Number.isInteger); }
+  }
+
+  function genResources(seed,w){ for(const p of w.provinces){ if(p.avgElevation>0.68) p.primaryResource=hash2(p.id,12,seed)>0.7?'Silver':'Iron'; if(p.riverDensity>0.05&&p.avgMoisture>0.5) p.primaryResource='Grain'; if(p.coastal) p.secondaryResources.push('Salt'); if(p.arcaneSaturation>70) p.secondaryResources.push('Arcane Reagent'); if(p.faithStrength>70) p.secondaryResources.push('Faith Relic'); } }
+
+  function genFactions(seed,w){ const count=5+(seed%4), archetypes=['militant','mercantile','religious','arcane','tribal']; const caps=[...w.provinces].sort((a,b)=>b.prosperity-a.prosperity).slice(0,count); w.factions=caps.map((c,i)=>({id:i,name:`${pick(['Iron','Golden','Ashen','Verdant','Azure','Crimson'],hash2(i,13,seed))} ${pick(['Crown','League','Concord','Host','Synod'],hash2(i,14,seed))}`,color:[(hash2(i,15,seed)*255)|0,(hash2(i,16,seed)*255)|0,(hash2(i,17,seed)*255)|0],archetype:archetypes[i%archetypes.length],capitalProvinceId:c.id,controlledProvinces:[c.id],legitimacy:55+((hash2(i,18,seed)*45)|0),wealth:50,manpower:50,supply:60,techLevel:(hash2(i,19,seed)*6)|0,faithAlignment:Object.keys(DEITIES)[i%8],arcaneTolerance:(hash2(i,20,seed)*100)|0,diplomacy:{},warExhaustion:0,expansionPressure:25+((hash2(i,21,seed)*45)|0),strategicGoals:['take_capital','cut_trade']})); for(const a of w.factions) for(const b of w.factions) if(a.id!==b.id) a.diplomacy[b.id]=Math.floor(hash2(a.id,b.id,seed)*160)-80; for(const p of w.provinces){ let best=0, dist=1e9; for(const f of w.factions){ const c=w.provinces[f.capitalProvinceId],d=Math.hypot(c.centerX-p.centerX,c.centerY-p.centerY); if(d<dist){dist=d;best=f.id;} } p.factionOwnerId=best; if(!w.factions[best].controlledProvinces.includes(p.id)) w.factions[best].controlledProvinces.push(p.id);} }
+
+  function genSettlementsTrade(seed,w){ for(const p of w.provinces){ const n=1+Math.min(4,p.settlementTier); for(let i=0;i<n;i++){ const type=i===0&&p.id===w.factions[p.factionOwnerId].capitalProvinceId?'capital':pick(settlementTypes,hash2(p.id,i,seed+44)); p.settlements.push({type,name:`${pick(['Alder','Stone','Raven','Dawn','Cinder','Brine'],hash2(i,p.id,seed+45))}${pick(['hold','watch','spire','ford','port','gate'],hash2(i,p.id,seed+46))}`}); } } const edges=new Set(); for(const p of w.provinces){ w.tradeGraph.nodes.push({provinceId:p.id,type:p.portNode?'port':(p.id===w.factions[p.factionOwnerId].capitalProvinceId?'capital':'market')}); for(const n of p.neighborIds){ const a=Math.min(p.id,n),b=Math.max(p.id,n),k=`${a}-${b}`; if(!Number.isInteger(n)||a===b||edges.has(k)) continue; edges.add(k); const q=w.provinces[n],base=clamp(0.95-(p.travelCostBase+q.travelCostBase)/80,0.1,0.95); w.tradeGraph.edges.push({from:a,to:b,type:(p.portNode&&q.portNode)?'sea':(p.riverDensity>0.06||q.riverDensity>0.06)?'river':'road',reliability:base}); } } }
+
+  function genActors(seed,w){ const total=130+(seed%71); for(let i=0;i<total;i++){ const tier=i<22?1:i<100?2:3, type=tier===1?pick(['ruler','general','prophet','monster'],hash2(i,30,seed)):pick(['general','hero','villain','prophet','monster'],hash2(i,31,seed)); const p=w.provinces[(hash2(i,32,seed)*w.provinces.length)|0],culture=pick(CULTURES,hash2(i,33,seed)); const actorRng=makeRng((seed^(i*9973))>>>0); w.actors.push({id:i,name:nameForCulture(culture,actorRng),epithet:pick(['the Red','Stormborn','Ironhand','of Ash','the Veiled'],hash2(i,36,seed)),type,tier,raceId:culture,cultureId:culture,factionId:p.factionOwnerId,provinceId:p.id,alive:true,power:(25+tier*20+hash2(i,37,seed)*35)|0,reputation:Math.floor(hash2(i,38,seed)*200)-100,fear:(hash2(i,39,seed)*100)|0,legitimacy:(hash2(i,40,seed)*100)|0,resources:(hash2(i,41,seed)*130)|0,traits:[pick(['disciplined','political','militant','arcane','zealous','ruthless'],hash2(i,42,seed))],goalShort:'Pursue leverage',ambitionLong:'Bend Ironbound',riskTolerance:hash2(i,43,seed),relationships:{},history:[],wanderPath:[],age:20+((hash2(i,44,seed)*230)|0),territorySize:1,notoriety:(hash2(i,45,seed)*100)|0,hunger:(hash2(i,46,seed)*100)|0,satellites:0}); } }
+
+  function genWars(seed,w){ const n=2+(seed%3); for(let i=0;i<n;i++){ const a=i%w.factions.length,b=(i+2)%w.factions.length; w.wars.push({id:i,factions:[a,b],goals:['take_capital','seize_pass','cut_trade','capture_port'],frontlineProvinces:[],supplyA:70,supplyB:70,moraleA:65,moraleB:65,warExhaustionA:0,warExhaustionB:0,activeCommanders:w.actors.filter(x=>x.type==='general').slice(i*3,i*3+5).map(x=>x.id),battles:[]}); } }
+  function genEcology(seed,w){ const cap=1+((hash2(1,1,seed)*4)|0); for(let i=0;i<cap;i++) w.apexActive.push({type:pick(APEX_ROSTER,hash2(i,2,seed)),lairProvinceId:(hash2(i,3,seed)*w.provinces.length)|0,power:65+((hash2(i,4,seed)*35)|0)}); w.apexActivityIndex=w.apexActive.reduce((s,a)=>s+a.power,0)/(w.apexActive.length||1); }
+  function genEventChains(seed,w){ for(let i=0;i<3;i++) w.eventChains.push({id:i,name:pick(EVENT_TYPES,hash2(i,5,seed)),stage:1,progress:0,targetProvinceId:(hash2(i,6,seed)*w.provinces.length)|0,active:true}); }
+
+  function newContractFromCause(w,causeType,causeId,provinceId){
+    const types=['Field Battle Support','Siege Relief','Raid / Counter-raid','Patrol / Route Clearance','Assassination / Capture','Monster Hunt / Lair Purge','Defensive Hold','Famine Relief','Plague Containment','Ruin Expedition'];
+    const p=w.provinces[provinceId]||w.provinces[0], id=w.contracts.length;
+    const risk=Math.floor(clamp(p.danger + (causeType==='war'?15:causeType==='apex'?25:10),0,100));
+    const c={id,type:pick(types,state.rng()),category:risk>60?'Combat':risk>40?'Crisis':'Opportunity',issuerFactionId:p.factionOwnerId,targetProvinceIds:[p.id],causeRefs:{eventId:causeType==='event'?causeId:-1,actorId:causeType==='actor'?causeId:-1,warId:causeType==='war'?causeId:-1,monsterId:causeType==='apex'?causeId:-1},objectives:['Primary objective','Optional objective'],timeWindow:[state.day,state.day+40],riskRating:risk,payout:{gold:180+Math.floor(risk*8+state.rng()*180),influence:Math.floor(risk/10),repEffects:Math.floor(state.rng()*16)-8},factionRelationEffects:{},successConsequences:['Stability rises','Trade improves'],failureConsequences:['Danger rises','Supply routes break'],issuedDay:state.day,expiresDay:state.day+40};
+    w.contracts.unshift(c); p.availableContracts.push(c.id); p.contractLoad++; if(w.contracts.length>45) w.contracts.length=45;
+  }
+
+  function genContracts(seed,w){ for(let i=0;i<26;i++) newContractFromCause(w,'event',i%w.eventChains.length,(hash2(i,7,seed)*w.provinces.length)|0); }
+
+  function genRumors(w,day,seed){ const r=[]; for(let i=0;i<4;i++){ const p=w.provinces[(day*7+i*11)%w.provinces.length], line=`In ${p.name}, ${pick(['war levies march at dawn','a prophet denounces a lord','a beast den was sighted','smugglers reopened a route','strange lights appear over ruins'],hash2(day,i,seed))}.`; r.push(hash2(day,i,seed+901)<0.25?`${line} (Rumor may be embellished.)`:line); } return r; }
+  function atmosphereForProvince(p){ if(p.danger>70) return 'Smoke hangs over ruined watchposts and uneasy silence grips the roads.'; if(p.faithStrength>70&&p.arcaneSaturation<25) return 'Orderly shrines and disciplined patrols keep beasts at bay.'; if(p.arcaneSaturation>70&&p.faithStrength<20) return 'Corruption scars the fields; candles burn in shuttered homes.'; if(p.prosperity>65) return 'Bustling markets and loud taverns speak of confidence and coin.'; return 'Travelers pass cautiously through contested villages and muddy roads.'; }
+
+  function tickDay(){
+    const w=state.world; state.day++;
+    const prevAge = w.worldAge;
+
+    for(const chain of w.eventChains){ if(!chain.active) continue; chain.progress += 8 + state.rng()*8; if(chain.progress>=100){ chain.progress=0; chain.stage++; const p=w.provinces[chain.targetProvinceId]; if(chain.stage>4){ chain.active=false; w.chronicle.unshift(`Day ${state.day}: ${chain.name} concludes in ${p.name}.`);} else { w.chronicle.unshift(`Day ${state.day}: ${chain.name} advances to stage ${chain.stage} in ${p.name}.`); newContractFromCause(w,'event',chain.id,p.id);} } }
+
+    for(const war of w.wars){
+      const [fa,fb]=war.factions.map(id=>w.factions[id]);
+      war.supplyA=clamp(war.supplyA+state.rng()*4-2-fa.warExhaustion*0.02,0,100); war.supplyB=clamp(war.supplyB+state.rng()*4-2-fb.warExhaustion*0.02,0,100);
+      if(state.rng()<0.38){ const p=w.provinces[(state.rng()*w.provinces.length)|0], winner=state.rng()<0.5?fa.id:fb.id; war.battles.push({day:state.day,provinceId:p.id,winnerId:winner,losses:20+((state.rng()*140)|0)}); war.frontlineProvinces=[p.id]; p.contested=true; p.contestedDays=4; p.stability=clamp(p.stability-3,0,100); p.danger=clamp(p.danger+5,0,100); newContractFromCause(w,'war',war.id,p.id); }
+      fa.warExhaustion=clamp(fa.warExhaustion+0.45+state.rng(),0,100); fb.warExhaustion=clamp(fb.warExhaustion+0.45+state.rng(),0,100);
+      if((fa.warExhaustion+fb.warExhaustion)/2 > 86 && state.rng() < 0.25){ w.chronicle.unshift(`Day ${state.day}: Exhausted hosts of ${fa.name} and ${fb.name} accept a bitter truce.`); w.proclamations.unshift(`By armistice decree, ${fa.name} and ${fb.name} withdraw to their borders.`); war.resolved = true; }
+    }
+
+    w.wars=w.wars.filter(war=>!war.resolved);
+    w.claimsPressure=clamp(w.claimsPressure + (w.wars.length===0?1.2:-0.5),0,100);
+    if(w.wars.length===0 && w.claimsPressure>55 && state.rng()<0.3 && w.factions.length>1){ const a=(state.rng()*w.factions.length)|0,b=(a+1+((state.rng()*(w.factions.length-1))|0))%w.factions.length; w.wars.push({id:Date.now()%100000,factions:[a,b],goals:['seize_pass','cut_trade'],frontlineProvinces:[],supplyA:70,supplyB:70,moraleA:62,moraleB:62,warExhaustionA:0,warExhaustionB:0,activeCommanders:[],battles:[]}); w.chronicle.unshift(`Day ${state.day}: ${w.factions[a].name} and ${w.factions[b].name} mobilize over disputed claims.`); w.claimsPressure=20; }
+
+    for(const e of w.tradeGraph.edges){ const a=w.provinces[e.from],b=w.provinces[e.to],hazard=((a?.danger||0)+(b?.danger||0))*0.002; e.reliability=clamp(e.reliability+(state.rng()-0.5)*0.03-hazard,0.05,1); }
+
+    for(const p of w.provinces){ const f=w.factions[p.factionOwnerId],antiBlob=f.controlledProvinces.length*0.17+p.neighborIds.length*0.2; p.stability=clamp(p.stability+(p.infrastructure>65?0.22:0.08)-antiBlob*0.025-p.danger*0.004,0,100); p.unrest=100-p.stability; const corrupt=p.arcaneSaturation>70&&p.faithStrength<20; p.danger=clamp(p.danger+(corrupt?0.45:-0.11)+(p.unrest>60?0.12:-0.08),0,100); p.prosperity=clamp(p.prosperity+(p.stability>62?0.25:-0.22)-(p.danger>70?0.15:0),0,100); p.arcaneSaturation=clamp(p.arcaneSaturation+(state.rng()*3-1.5),0,100); p.faithStrength=clamp(p.faithStrength+(state.rng()*2.5-1.25),0,100); p.monsterPresence=p.danger>58; p.lawless=p.unrest>75; p.contestedDays=Math.max(0,p.contestedDays-1); p.contested=p.contestedDays>0; p.atmosphere=atmosphereForProvince(p); }
+
+    for(const a of w.actors){ if(!a.alive) continue; if(state.rng()<0.0018+(a.tier===1?0.0006:0)){ a.alive=false; a.deathDay=state.day; a.deathCause='died in the long struggle'; continue; } if(a.type==='monster'){ a.notoriety=clamp(a.notoriety+state.rng()*1.5,0,100); a.territorySize=clamp(a.territorySize+state.rng()*0.05,1,12); if(state.rng()<0.03) newContractFromCause(w,'actor',a.id,a.provinceId); } if(state.rng()<0.045) a.provinceId=(state.rng()*w.provinces.length)|0; }
+
+    const aliveActors=w.actors.filter(a=>a.alive).length;
+    if(aliveActors<120){ const add=Math.min(6,120-aliveActors); for(let i=0;i<add;i++){ const p=w.provinces[(state.rng()*w.provinces.length)|0],culture=pick(CULTURES,state.rng()),id=w.actors.length; w.actors.push({id,name:nameForCulture(culture,state.rng),epithet:'the Newblood',type:pick(['hero','general','villain','prophet'],state.rng()),tier:3,raceId:culture,cultureId:culture,factionId:p.factionOwnerId,provinceId:p.id,alive:true,power:35+Math.floor(state.rng()*25),reputation:0,fear:10,legitimacy:20,resources:20,traits:['ambitious'],goalShort:'Rise quickly',ambitionLong:'Claim renown',riskTolerance:state.rng(),relationships:{},history:[],wanderPath:[],age:20+Math.floor(state.rng()*20),territorySize:1,notoriety:5,hunger:0,satellites:0}); } }
+
+    if(state.day%7===0){ const p=w.provinces[(state.rng()*w.provinces.length)|0], t=pick(NARRATIVE_TEMPLATES.battle,state.rng()).replace('{province}',p.name); w.chronicle.unshift(`Day ${state.day}: ${t}`); }
+    if(state.day%9===0){ const f=w.factions[(state.rng()*w.factions.length)|0]; w.proclamations.unshift(`By order of ${f.name}, tariffs are revised and border levies doubled.`); }
+    if(state.day%6===0){ const p=w.provinces[(state.rng()*w.provinces.length)|0], t=pick(NARRATIVE_TEMPLATES.crisis,state.rng()).replace('{province}',p.name); w.encounters.unshift(t); }
+    if(state.day%5===0){ w.rumors=genRumors(w,state.day,state.seed); }
+
+    if(w.contracts.filter(c=>c.category==='Combat').length<8) newContractFromCause(w,'war',0,(state.rng()*w.provinces.length)|0);
+    if(w.contracts.filter(c=>c.category==='Crisis').length<8) newContractFromCause(w,'event',0,(state.rng()*w.provinces.length)|0);
+
+    w.civilizationScore=w.provinces.reduce((s,p)=>s+p.prosperity,0)/w.provinces.length;
+    w.warFrequency=w.wars.reduce((s,x)=>s+x.battles.length,0)/Math.max(1,w.wars.length);
+    w.meanArcane=w.provinces.reduce((s,p)=>s+p.arcaneSaturation,0)/w.provinces.length;
+    w.meanFaith=w.provinces.reduce((s,p)=>s+p.faithStrength,0)/w.provinces.length;
+    w.apexActivityIndex=w.apexActive.reduce((s,a)=>s+a.power,0)/(w.apexActive.length||1);
+
+    if(w.worldAge==='Apocalyptic'&&state.rng()<0.01){ w.cataclysmCount++; const p=w.provinces[(state.rng()*w.provinces.length)|0]; p.danger=clamp(p.danger+25,0,100); p.prosperity=clamp(p.prosperity-20,0,100); w.chronicle.unshift(`Day ${state.day}: A cataclysm tears through ${p.name}.`); newContractFromCause(w,'apex',0,p.id); }
+
+    w.contracts=w.contracts.filter(c=>c.expiresDay>=state.day);
+    for(const p of w.provinces) p.contractLoad=0;
+    for(const c of w.contracts){ for(const pId of c.targetProvinceIds){ const p=w.provinces[pId]; if(p) p.contractLoad++; } }
+
+    w.warExhaustionMean=w.factions.reduce((s,f)=>s+f.warExhaustion,0)/w.factions.length;
+    w.tradeReliabilityMean=w.tradeGraph.edges.reduce((s,e)=>s+e.reliability,0)/Math.max(1,w.tradeGraph.edges.length);
+    w.ageScore=w.civilizationScore-w.warFrequency*0.6+w.meanArcane*0.2+w.meanFaith*0.1-w.cataclysmCount*12-w.apexActivityIndex*0.1;
+    w.worldAge=w.ageScore>72?'Golden':w.ageScore>48?'Young':w.ageScore>30?'Decline':'Apocalyptic';
+    if(w.worldAge!==prevAge) w.chronicle.unshift(`Day ${state.day}: The world shifts from ${prevAge} to ${w.worldAge}.`);
+    w.stabilityMean=w.provinces.reduce((s,p)=>s+p.stability,0)/w.provinces.length;
+
+    while(w.eventChains.filter(c=>c.active).length<3){ const id=w.eventChains.length; w.eventChains.push({id,name:pick(EVENT_TYPES,state.rng()),stage:1,progress:0,targetProvinceId:(state.rng()*w.provinces.length)|0,active:true}); }
+
+    if(w.chronicle.length>50) w.chronicle.length=50;
+    if(w.proclamations.length>8) w.proclamations.length=8;
+    if(w.encounters.length>8) w.encounters.length=8;
+  }
+
+  const canvas=document.getElementById('map'), ctx=canvas.getContext('2d'), img=ctx.createImageData(SIZE,SIZE);
+  state.offscreen.width=SIZE; state.offscreen.height=SIZE; const off=state.offscreen.getContext('2d');
+
+  const getProvince=i=>{ const id=state.world.provinceMap[i]; return id>=0?state.provinceById.get(id):null; };
+  const lodMode=()=>state.cam.zoom<0.7?'strategic':state.cam.zoom<1.7?'regional':'local';
+
+  function colorAt(i){
+    const w=state.world,p=getProvince(i),h=w.height[i];
+    if(state.overlay==='terrain'){ if(w.water[i]) return [20,50,130]; if(h>0.85) return [236,236,246]; if(h>0.72) return [128,128,142]; if(h>0.55) return [100,132,90]; if(h>0.33) return [72,120,72]; return [195,170,110]; }
+    if(state.overlay==='elevation'){ const v=(h*255)|0; return [v,v,v]; }
+    if(state.overlay==='rivers'){ if(w.water[i]) return [20,50,130]; if(w.lakes[i]) return [40,105,200]; if(w.rivers[i]) return [45,140,230]; if(w.swamps[i]) return [65,105,75]; return [74,86,64]; }
+    if(state.overlay==='provinces'){ const id=w.provinceMap[i]; return id<0?[10,20,40]:[(id*59)%255,(id*97)%255,(id*149)%255]; }
+    if(!p) return [18,32,84];
+    if(state.overlay==='political') return state.factionById.get(p.factionOwnerId).color;
+    if(state.overlay==='warfront') return p.contested?[230,70,70]:[45,65,86];
+    if(state.overlay==='trade'){ let rel=0,count=0; for(const e of w.tradeGraph.edges){ if(e.from===p.id||e.to===p.id){ rel+=e.reliability; count++; } } rel=clamp(rel/(count||1),0,1); return [Math.floor((1-rel)*220),Math.floor(rel*220),60]; }
+    if(state.overlay==='danger') return [Math.floor(p.danger*2.2),30,35];
+    if(state.overlay==='faith') return [40,Math.floor(p.faithStrength*2.2),130-Math.floor(p.faithStrength*0.7)];
+    if(state.overlay==='arcane') return [130+Math.floor(p.arcaneSaturation*1.2),40,170+Math.floor(p.arcaneSaturation*0.5)];
+    if(state.overlay==='contracts') return [40,Math.min(255,p.contractLoad*28),Math.min(255,p.contractLoad*45)];
+    return [0,0,0];
+  }
+
+  function renderMap(){
+    const lod=lodMode(),data=img.data;
+    for(let i=0;i<CELLS;i++){ const c=colorAt(i); if(lod==='strategic'){ const d=((c[0]+c[1]+c[2])/3)|0; data[i*4]=d; data[i*4+1]=d; data[i*4+2]=d; } else if(lod==='regional'){ data[i*4]=c[0]; data[i*4+1]=c[1]; data[i*4+2]=c[2]; } else { data[i*4]=Math.min(255,c[0]+10); data[i*4+1]=Math.min(255,c[1]+10); data[i*4+2]=Math.min(255,c[2]+10); } data[i*4+3]=255; }
+    off.putImageData(img,0,0); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.translate(state.cam.x,state.cam.y); ctx.scale(state.cam.zoom,state.cam.zoom); ctx.drawImage(state.offscreen,0,0);
+  }
+
+  function updateUI(){
+    const w=state.world;
+    document.getElementById('day').textContent=state.day;
+    document.getElementById('age').textContent=`${w.worldAge} (${w.ageScore.toFixed(1)})`;
+    document.getElementById('civ').textContent=w.civilizationScore.toFixed(1);
+    document.getElementById('apex').textContent=w.apexActive.length;
+    document.getElementById('stabilityMean').textContent=w.stabilityMean.toFixed(1);
+    document.getElementById('warExMean').textContent=w.warExhaustionMean.toFixed(1);
+    document.getElementById('tradeMean').textContent=(w.tradeReliabilityMean*100).toFixed(0)+'%';
+    document.getElementById('genMs').textContent=`${w.genMs} ms`;
+    document.getElementById('provinceCount').textContent=w.provinces.length;
+    document.getElementById('factionCount').textContent=w.factions.length;
+    document.getElementById('actorCount').textContent=w.actors.filter(a=>a.alive).length;
+    document.getElementById('warCount').textContent=w.wars.length;
+    document.getElementById('contractCount').textContent=w.contracts.length;
+    document.getElementById('legend').innerHTML=`<span class='pill'>${state.overlay}</span><span class='pill'>LOD:${lodMode()}</span><div class='muted'>Trade edges ${w.tradeGraph.edges.length} · Mean arcane ${w.meanArcane.toFixed(1)} · Mean faith ${w.meanFaith.toFixed(1)} · Cataclysms ${w.cataclysmCount}</div><div class='muted'>gen ms: tect ${w.genTimings.tectonics}, hydro ${w.genTimings.hydrology}, clim ${w.genTimings.climate}, prov ${w.genTimings.provinces}</div>`;
+    document.getElementById('chronicle').innerHTML=w.chronicle.slice(0,12).map(x=>`<div class='card'>${x}</div>`).join('');
+    document.getElementById('chains').innerHTML=w.eventChains.filter(c=>c.active).map(c=>`<div class='card'><strong>${c.name}</strong><div class='muted'>Stage ${c.stage} · ${c.progress.toFixed(0)}%</div></div>`).join('')||`<div class='card muted'>No active chains.</div>`;
+    document.getElementById('rumors').innerHTML=w.rumors.map(x=>`<div class='card'>${x}</div>`).join('');
+    document.getElementById('proclamations').innerHTML=w.proclamations.map(x=>`<div class='card'>${x}</div>`).join('');
+    document.getElementById('encounters').innerHTML=w.encounters.map(x=>`<div class='card'>${x}</div>`).join('');
+    document.getElementById('wars').innerHTML=w.wars.slice(0,6).map(war=>{ const a=state.factionById.get(war.factions[0]),b=state.factionById.get(war.factions[1]); return `<div class='card'><strong>${a?.name||'Faction A'} vs ${b?.name||'Faction B'}</strong><div class='muted'>Battles ${war.battles.length} · Goals: ${war.goals.join(', ')}</div></div>`; }).join('')||`<div class='card muted'>No active wars.</div>`;
+    document.getElementById('contracts').innerHTML=w.contracts.slice(0,10).map(c=>`<div class='card'><strong>${c.type}</strong><div class='muted'>${c.category} · risk ${c.riskRating} · causes: E${c.causeRefs.eventId}/W${c.causeRefs.warId}/M${c.causeRefs.monsterId}</div><div>Payout ${c.payout.gold}g +${c.payout.influence} influence</div></div>`).join('');
+
+    const p=state.selectedProvince;
+    document.getElementById('province').innerHTML=p?`<div class='card'><h3>${p.name}</h3><div><span class='pill'>${p.classification}</span><span class='pill'>${p.primaryResource}</span><span class='pill'>${p.biomeType}</span></div><div class='grid2'><div>Owner: ${state.factionById.get(p.factionOwnerId).name}</div><div>Population: ${p.population}</div><div>Stability: ${p.stability.toFixed(1)}</div><div>Unrest: ${p.unrest.toFixed(1)}</div><div>Faith: ${p.faithStrength.toFixed(1)}</div><div>Arcane: ${p.arcaneSaturation.toFixed(1)}</div><div>Danger: ${p.danger.toFixed(1)}</div><div>Trade: ${p.tradeValue}</div></div><ul><li>Deity alignment: ${DEITIES[p.divineAlignment].name}</li><li>Atmosphere: ${p.atmosphere || atmosphereForProvince(p)}</li><li>Secondary resources: ${p.secondaryResources.join(', ')}</li><li>Settlements: ${p.settlements.map(s=>`${s.name} (${s.type})`).join(', ')}</li></ul></div>`:`<div class='card'>Click map to inspect a province.</div>`;
+  }
+
+  function rebuild(){ state.provinceById=new Map(state.world.provinces.map(p=>[p.id,p])); state.factionById=new Map(state.world.factions.map(f=>[f.id,f])); }
+  function syncSeedInput(){ document.getElementById('seedInput').value = String(state.seed >>> 0); }
+  function reset(seed){ state.seed=seed>>>0; state.rng=makeRng((state.seed^0x9e3779b9)>>>0); state.day=1; state.world=generateWorld(state.seed); rebuild(); state.selectedProvince=null; syncSeedInput(); }
+  function exportSnapshot(){
+    const payload={seed:state.seed>>>0,day:state.day,speed:state.speed,overlay:state.overlay,zoom:state.cam.zoom};
+    if(window.ironboundDesktop?.saveSnapshot){
+      window.ironboundDesktop.saveSnapshot(payload).then((path)=>{
+        state.world.chronicle.unshift(`Day ${state.day}: Snapshot saved to ${path}.`);
+      });
+      return;
+    }
+    navigator.clipboard?.writeText(JSON.stringify(payload));
+    state.world.chronicle.unshift(`Day ${state.day}: Snapshot exported to clipboard.`);
+  }
+  function importSnapshot(){
+    if(window.ironboundDesktop?.loadSnapshot){
+      window.ironboundDesktop.loadSnapshot().then((data)=>{
+        if(!data) return;
+        reset((data.seed>>>0)||state.seed);
+        state.speed=clamp(Number(data.speed)||state.speed,1,40);
+        state.overlay=typeof data.overlay==='string'?data.overlay:state.overlay;
+        state.cam.zoom=clamp(Number(data.zoom)||state.cam.zoom,0.45,8);
+        const targetDay=Math.max(1,Math.floor(Number(data.day)||1));
+        for(let i=1;i<targetDay;i++) tickDay();
+        state.world.chronicle.unshift(`Day ${state.day}: Snapshot imported from file.`);
+      });
+      return;
+    }
+    const raw=prompt('Paste snapshot JSON');
+    if(!raw) return;
+    try{
+      const data=JSON.parse(raw);
+      reset((data.seed>>>0)||state.seed);
+      state.speed=clamp(Number(data.speed)||state.speed,1,40);
+      state.overlay=typeof data.overlay==='string'?data.overlay:state.overlay;
+      state.cam.zoom=clamp(Number(data.zoom)||state.cam.zoom,0.45,8);
+      const targetDay=Math.max(1,Math.floor(Number(data.day)||1));
+      for(let i=1;i<targetDay;i++) tickDay();
+      state.world.chronicle.unshift(`Day ${state.day}: Snapshot imported.`);
+    }catch{ state.world.chronicle.unshift('Snapshot import failed: invalid JSON.'); }
+  }
+  function pickProvinceAt(sx,sy){ const x=Math.floor((sx-state.cam.x)/state.cam.zoom), y=Math.floor((sy-state.cam.y)/state.cam.zoom); if(x<0||y<0||x>=SIZE||y>=SIZE) return null; const id=state.world.provinceMap[y*SIZE+x]; return id>=0?state.provinceById.get(id):null; }
+
+  let last=performance.now();
+  function frame(ts){ const dt=ts-last; last=ts; if(!state.paused){ state.accum+=dt; const ms=1000/state.speed; while(state.accum>=ms){ tickDay(); state.accum-=ms; } } renderMap(); updateUI(); requestAnimationFrame(frame); }
+
+  document.getElementById('regen').addEventListener('click',()=>reset((Math.random()*0xffffffff)>>>0));
+  document.getElementById('pause').addEventListener('click',e=>{ state.paused=!state.paused; e.target.textContent=state.paused?'Resume':'Pause'; });
+  document.getElementById('step').addEventListener('click',()=>{ tickDay(); renderMap(); updateUI(); });
+  document.getElementById('step30').addEventListener('click',()=>{ for(let i=0;i<30;i++) tickDay(); renderMap(); updateUI(); });
+  document.getElementById('export').addEventListener('click',()=>exportSnapshot());
+  document.getElementById('import').addEventListener('click',()=>{ importSnapshot(); renderMap(); updateUI(); });
+  document.getElementById('applySeed').addEventListener('click',()=>{ const n=Number(document.getElementById('seedInput').value); if(Number.isFinite(n)) reset(n>>>0); });
+  document.getElementById('overlay').addEventListener('change',e=>state.overlay=e.target.value);
+  document.getElementById('speed').addEventListener('input',e=>state.speed=Number(e.target.value));
+  canvas.addEventListener('wheel',e=>{ e.preventDefault(); state.cam.zoom=clamp(state.cam.zoom*(e.deltaY>0?0.9:1.1),0.45,8); });
+  canvas.addEventListener('mousedown',e=>{ state.cam.drag=true; state.cam.lastX=e.clientX; state.cam.lastY=e.clientY; });
+  addEventListener('mouseup',()=>state.cam.drag=false);
+  addEventListener('mousemove',e=>{ if(!state.cam.drag) return; state.cam.x+=e.clientX-state.cam.lastX; state.cam.y+=e.clientY-state.cam.lastY; state.cam.lastX=e.clientX; state.cam.lastY=e.clientY; });
+  canvas.addEventListener('click',e=>{ state.selectedProvince=pickProvinceAt(e.offsetX,e.offsetY); updateUI(); });
+
+  reset(state.seed); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
