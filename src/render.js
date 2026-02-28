@@ -54,6 +54,11 @@ export function screenToWorldMap(world, canvas, sx, sy) {
 }
 
 function colorFor(world, i, h, m, r, t) {
+  const curvature = world.maps.curvature?.[i] ?? 0.5;
+  const canyon = world.maps.canyonMask?.[i] ?? 0;
+  const glacier = world.maps.glacialMask?.[i] ?? 0;
+  const alluvial = world.maps.alluvialMask?.[i] ?? 0;
+  const coastalExp = world.maps.coastalExposure?.[i] ?? 0;
   switch (world.overlay) {
     case 'elevation':
       return [h * 255, h * 255, h * 255];
@@ -90,12 +95,15 @@ function colorFor(world, i, h, m, r, t) {
       return [hue, 90 + hue / 3, 180 - hue / 4];
     }
     default:
-      if (h < 0.28) return [24, 58, 98];
-      if (h > 0.85) return [210, 210, 220];
-      if (h > 0.72) return [145, 140, 145];
-      if (m < 0.24 && t > 0.45) return [171, 140, 90];
-      if (m > 0.72) return [42, 104, 80];
-      return [78, 132, 82];
+      if (h < 0.28) return [16 + coastalExp * 10, 42 + coastalExp * 22, 88 + coastalExp * 18];
+      if (glacier) return [210, 216, 230];
+      if (canyon) return [72, 56, 44];
+      if (h > 0.85) return [206, 208, 216];
+      if (h > 0.72) return [138 + curvature * 10, 132 + curvature * 8, 142 + curvature * 10];
+      if (m < 0.24 && t > 0.45) return [164 + coastalExp * 8, 132 + curvature * 8, 86];
+      if (alluvial) return [92, 128 + m * 28, 78];
+      if (m > 0.72) return [40, 104 + curvature * 10, 80];
+      return [74 + curvature * 14, 124 + m * 22, 82 + coastalExp * 10];
   }
 }
 

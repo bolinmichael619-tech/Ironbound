@@ -27,6 +27,10 @@ export const WORLDGEN_DEFAULTS = {
   desertHarshness: 0.4,
   rainShadowStrength: 0.22,
   channelIncision: 0.55,
+  canyonStrength: 0.38,
+  glaciationStrength: 0.42,
+  coastalCurrentStrength: 0.5,
+  rainCellCount: 6,
   provinceTarget: 110,
   factionCount: 7,
   actorTarget: 180,
@@ -56,8 +60,12 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
   const climate = genClimate(size, tectonics, hydrology, rng, cfg);
   timings.climate = performance.now() - t2;
 
+  const t2b = performance.now();
+  const geomorph = genGeomorphology(size, tectonics, hydrology, climate, rng, cfg);
+  timings.geomorphology = performance.now() - t2b;
+
   const t3 = performance.now();
-  const provinces = genProvinces(size, tectonics, climate, hydrology, rng, cfg);
+  const provinces = genProvinces(size, tectonics, climate, hydrology, geomorph, rng, cfg);
   timings.provinces = performance.now() - t3;
 
   const t4 = performance.now();
@@ -96,6 +104,8 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       swamps: hydrology.swampCount,
       estuaries: hydrology.estuaryCount,
       floodplains: hydrology.floodplainCount,
+      canyonCells: geomorph.canyonCount,
+      glaciatedCells: geomorph.glacierCount,
       provinces: provinces.length
     },
     maps: {
@@ -126,9 +136,16 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       windExposure: climate.windExposure,
       evapotranspiration: climate.evapotranspiration,
       soilFertility: climate.soilFertility,
+      rainCellInfluence: climate.rainCellInfluence,
       biome: climate.biome,
       biomeMoistureBand: climate.moistureBand,
-      biomeTempBand: climate.tempBand
+      biomeTempBand: climate.tempBand,
+      curvature: geomorph.curvature,
+      landform: geomorph.landform,
+      canyonMask: geomorph.canyonMask,
+      glacialMask: geomorph.glacialMask,
+      alluvialMask: geomorph.alluvialMask,
+      coastalExposure: geomorph.coastalExposure
     },
     provinces,
     factions,
@@ -465,6 +482,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
   const windExposure = new Float32Array(n);
   const evapotranspiration = new Float32Array(n);
   const soilFertility = new Float32Array(n);
+  const rainCellInfluence = new Float32Array(n);
   const biome = new Uint8Array(n);
   const tempBand = new Uint8Array(n);
   const moistureBand = new Uint8Array(n);
@@ -472,6 +490,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
   const { height, moistureBase, waterMask } = tectonics;
   const { riverMask, lakeMask, swampMask } = hydrology;
   const distanceToWater = buildDistanceToWater(size, waterMask, lakeMask);
+  const rainCells = buildRainCells(size, rng, cfg);
   const maxDist = size * 0.4;
 
   for (let y = 0; y < size; y++) {
@@ -505,6 +524,8 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       const cont = smoothstep(0, 1, waterDistNorm);
       continentality[i] = cont;
       windExposure[i] = 1 - shadowCarry;
+      const rainCellBoost = sampleRainCells(x, y, rainCells, size);
+      rainCellInfluence[i] = rainCellBoost;
 
       const elevCool = Math.max(0, h - 0.35) * 0.56;
       const inlandSwing = (cont - 0.5) * 0.14;
@@ -518,7 +539,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       const coastBonus = nearCoast(x, y, size, waterMask) ? 0.12 : 0;
       const inlandDry = cont * 0.22 + Math.max(0, h - 0.62) * 0.28 + shadowCarry * cfg.rainShadowStrength;
 
-      let m = moistureBase[i] + humidityCarry * 0.22 + riverBonus + lakeBonus + swampBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
+      let m = moistureBase[i] + humidityCarry * 0.22 + rainCellBoost * 0.18 + riverBonus + lakeBonus + swampBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
       m = clamp(m, 0, 1);
       moisture[i] = m;
 
@@ -528,7 +549,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       const alluvialBoost = hydrology.floodplainMask[i] ? 0.22 : 0;
       const estuaryBoost = hydrology.estuaryMask[i] ? 0.14 : 0;
       const erosionPenalty = tectonics.erosionMap[i] * 0.1;
-      soilFertility[i] = clamp(0.45 * m + 0.25 * (1 - Math.abs(t - 0.55)) + alluvialBoost + estuaryBoost - erosionPenalty, 0, 1);
+      soilFertility[i] = clamp(0.45 * m + 0.25 * (1 - Math.abs(t - 0.55)) + alluvialBoost + estuaryBoost + rainCellBoost * 0.09 - erosionPenalty, 0, 1);
 
       tempBand[i] = t < 0.27 ? 0 : t < 0.47 ? 1 : t < 0.68 ? 2 : 3;
       moistureBand[i] = m < 0.28 ? 0 : m < 0.56 ? 1 : 2;
@@ -536,7 +557,69 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
     }
   }
 
-  return { temp, moisture, rainShadow, continentality, windExposure, evapotranspiration, soilFertility, biome, tempBand, moistureBand };
+  return { temp, moisture, rainShadow, continentality, windExposure, evapotranspiration, soilFertility, rainCellInfluence, biome, tempBand, moistureBand };
+}
+
+function genGeomorphology(size, tectonics, hydrology, climate, rng, cfg) {
+  const n = size * size;
+  const curvature = new Float32Array(n);
+  const landform = new Uint8Array(n);
+  const canyonMask = new Uint8Array(n);
+  const glacialMask = new Uint8Array(n);
+  const alluvialMask = new Uint8Array(n);
+  const coastalExposure = new Float32Array(n);
+
+  let canyonCount = 0;
+  let glacierCount = 0;
+
+  const canyonThreshold = 0.62 - clamp(cfg.canyonStrength, 0, 1) * 0.22;
+  const glacierLatThreshold = 0.58 - clamp(cfg.glaciationStrength, 0, 1) * 0.12;
+
+  for (let y = 1; y < size - 1; y++) {
+    const lat = Math.abs((y / (size - 1)) * 2 - 1);
+    for (let x = 1; x < size - 1; x++) {
+      const i = y * size + x;
+      const h = tectonics.height[i];
+
+      const hL = tectonics.height[i - 1];
+      const hR = tectonics.height[i + 1];
+      const hU = tectonics.height[i - size];
+      const hD = tectonics.height[i + size];
+      curvature[i] = clamp(((hL + hR + hU + hD) * 0.25 - h) * 18 + 0.5, 0, 1);
+
+      const wet = climate.moisture[i] > 0.55 || hydrology.floodplainMask[i];
+      if (!tectonics.waterMask[i] && h > 0.42 && tectonics.slope[i] > canyonThreshold && !wet) {
+        canyonMask[i] = 1;
+        canyonCount += 1;
+      }
+
+      if (!tectonics.waterMask[i] && (lat > glacierLatThreshold || h > 0.82) && climate.temp[i] < 0.3) {
+        glacialMask[i] = 1;
+        glacierCount += 1;
+      }
+
+      if (!tectonics.waterMask[i] && (hydrology.floodplainMask[i] || hydrology.estuaryMask[i] || hydrology.lakeMask[i])) {
+        alluvialMask[i] = 1;
+      }
+
+      const coastDist = localCoastDistance(x, y, size, tectonics.waterMask, 8);
+      coastalExposure[i] = clamp(1 - coastDist / 8, 0, 1) * clamp(cfg.coastalCurrentStrength, 0.1, 1);
+
+      landform[i] = tectonics.waterMask[i]
+        ? 0
+        : canyonMask[i]
+          ? 5
+          : glacialMask[i]
+            ? 4
+            : alluvialMask[i]
+              ? 3
+              : tectonics.slope[i] > 0.5
+                ? 2
+                : 1;
+    }
+  }
+
+  return { curvature, landform, canyonMask, glacialMask, alluvialMask, coastalExposure, canyonCount, glacierCount };
 }
 
 function biomeBand(h, t, m, cfg) {
@@ -553,20 +636,20 @@ function biomeBand(h, t, m, cfg) {
   return BIOMES.indexOf('lowland');
 }
 
-function genProvinces(size, tectonics, climate, hydrology, rng, cfg) {
+function genProvinces(size, tectonics, climate, hydrology, geomorph, rng, cfg) {
   const target = clampInt(cfg.provinceTarget, 80, 160);
-  const seeds = sampleProvinceSeeds(size, target, tectonics, climate, hydrology, rng, cfg);
+  const seeds = sampleProvinceSeeds(size, target, tectonics, climate, hydrology, geomorph, rng, cfg);
 
-  const provinceMap = growProvincesWeighted(size, seeds, tectonics, climate, hydrology);
-  const provinces = buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydrology, rng);
+  const provinceMap = growProvincesWeighted(size, seeds, tectonics, climate, hydrology, geomorph);
+  const provinces = buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydrology, geomorph, rng);
 
   computeNeighbors(size, provinceMap, provinces);
-  normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate, hydrology, rng);
+  normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate, hydrology, geomorph, rng);
 
   return provinces;
 }
 
-function sampleProvinceSeeds(size, target, tectonics, climate, hydrology, rng, cfg) {
+function sampleProvinceSeeds(size, target, tectonics, climate, hydrology, geomorph, rng, cfg) {
   const candidates = [];
   for (let y = 2; y < size - 2; y++) {
     for (let x = 2; x < size - 2; x++) {
@@ -584,7 +667,10 @@ function sampleProvinceSeeds(size, target, tectonics, climate, hydrology, rng, c
       const pass = h > 0.58 && h < 0.74 ? 0.12 : 0;
       const coast = h < cfg.seaLevel + 0.06 ? 0.14 : 0;
       const dangerPenalty = tectonics.slope[i] > 0.42 ? 0.12 : 0;
-      const score = fertile + river + lake + pass + coast - dangerPenalty;
+      const canyonPenalty = geomorph.canyonMask[i] ? 0.18 : 0;
+      const glacierPenalty = geomorph.glacialMask[i] ? 0.22 : 0;
+      const alluvialBonus = geomorph.alluvialMask[i] ? 0.12 : 0;
+      const score = fertile + river + lake + pass + coast + alluvialBonus - dangerPenalty - canyonPenalty - glacierPenalty;
 
       if (score > 0.18) candidates.push({ x, y, i, score });
     }
@@ -620,7 +706,7 @@ function sampleProvinceSeeds(size, target, tectonics, climate, hydrology, rng, c
   return seeds;
 }
 
-function growProvincesWeighted(size, seeds, tectonics, climate, hydrology) {
+function growProvincesWeighted(size, seeds, tectonics, climate, hydrology, geomorph) {
   const n = size * size;
   const provinceMap = new Int32Array(n);
   provinceMap.fill(-1);
@@ -653,7 +739,7 @@ function growProvincesWeighted(size, seeds, tectonics, climate, hydrology) {
         const ni = ny * size + nx;
         if (tectonics.waterMask[ni]) continue;
 
-        const moveCost = terrainMoveCost(ni, tectonics, climate, hydrology);
+        const moveCost = terrainMoveCost(ni, tectonics, climate, hydrology, geomorph);
         const diagonal = ox && oy ? 1.35 : 1;
         const nc = node.cost + moveCost * diagonal;
 
@@ -669,7 +755,7 @@ function growProvincesWeighted(size, seeds, tectonics, climate, hydrology) {
   return provinceMap;
 }
 
-function terrainMoveCost(i, tectonics, climate, hydrology) {
+function terrainMoveCost(i, tectonics, climate, hydrology, geomorph) {
   const b = climate.biome[i];
   let cost = 1;
   if (b === BIOMES.indexOf('forest')) cost = 1.3;
@@ -680,11 +766,13 @@ function terrainMoveCost(i, tectonics, climate, hydrology) {
   if (hydrology.riverMask[i]) cost += 1.8;
   if (hydrology.floodplainMask[i]) cost -= 0.18;
   cost += (1 - hydrology.drainage[i]) * 0.22;
+  if (geomorph.canyonMask[i]) cost += 2.6;
+  if (geomorph.glacialMask[i]) cost += 1.2;
   if (tectonics.slope[i] > 0.3) cost += tectonics.slope[i] * 2;
   return cost;
 }
 
-function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydrology, rng) {
+function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydrology, geomorph, rng) {
   const provinces = seeds.map((s) => ({
     id: s.id,
     name: `Province ${s.id + 1}`,
@@ -749,6 +837,8 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
     p.floodplainShare += hydrology.floodplainMask[i];
     p.drainageQuality += hydrology.drainage[i];
     p.soilFertility += climate.soilFertility[i];
+    p.canyonShare = (p.canyonShare ?? 0) + geomorph.canyonMask[i];
+    p.glacialShare = (p.glacialShare ?? 0) + geomorph.glacialMask[i];
 
     if (hydrology.lakeMask[i]) p.lakePresence = true;
     if (tectonics.height[i] < 0.33) p.coastal = true;
@@ -766,6 +856,8 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
     p.floodplainShare /= Math.max(1, p.cells);
     p.drainageQuality /= Math.max(1, p.cells);
     p.soilFertility /= Math.max(1, p.cells);
+    p.canyonShare /= Math.max(1, p.cells);
+    p.glacialShare /= Math.max(1, p.cells);
     p.elevationVar = Math.max(0.01, 0.28 * p.avgElevation * (1 - p.avgElevation));
 
     p.classification = classifyProvinceFromContext(p);
@@ -835,7 +927,7 @@ function computeNeighbors(size, provinceMap, provinces) {
   }
 }
 
-function normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate, hydrology, rng) {
+function normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate, hydrology, geomorph, rng) {
   const minCells = 180;
   const maxCells = Math.max(2500, (size * size) / 18);
 
@@ -849,7 +941,7 @@ function normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate
       p.expansionPressure = (p.expansionPressure ?? 0) + 5;
     }
 
-    p.travelCostBase = clamp(8 + p.avgElevation * 20 + p.riverDensity * 14 + (1 - p.drainageQuality) * 5 + (p.biomeType === 'mountains' ? 10 : 0), 6, 55);
+    p.travelCostBase = clamp(8 + p.avgElevation * 20 + p.riverDensity * 14 + (1 - p.drainageQuality) * 5 + p.canyonShare * 18 + p.glacialShare * 11 + (p.biomeType === 'mountains' ? 10 : 0), 6, 55);
     p.tradeValue = clamp(p.tradeValue + p.riverDensity * 40 + p.floodplainShare * 25 + (p.portNode ? 25 : 0) - (p.biomeType === 'desert' ? 10 : 0), 0, 120);
     p.prosperity = clamp(p.prosperity + p.tradeValue * 0.08 + p.soilFertility * 9 - p.danger * 0.05, 0, 100);
     p.infrastructure = clamp(p.infrastructure + p.tradeValue * 0.04, 0, 100);
@@ -859,6 +951,7 @@ function normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate
   void tectonics;
   void climate;
   void hydrology;
+  void geomorph;
   void rng;
 }
 
@@ -1311,6 +1404,48 @@ function buildDistanceToWater(size, waterMask, lakeMask) {
   }
 
   return dist;
+}
+
+function buildRainCells(size, rng, cfg) {
+  const count = clampInt(cfg.rainCellCount, 2, 14);
+  const cells = [];
+  for (let i = 0; i < count; i++) {
+    const radius = size * (0.06 + rng() * 0.1);
+    cells.push({
+      x: rng() * size,
+      y: rng() * size,
+      radius,
+      intensity: 0.4 + rng() * 0.8
+    });
+  }
+  return cells;
+}
+
+function sampleRainCells(x, y, cells, size) {
+  let sum = 0;
+  for (const c of cells) {
+    const dx = x - c.x;
+    const dy = y - c.y;
+    const d = Math.hypot(dx, dy);
+    if (d > c.radius) continue;
+    const w = 1 - d / c.radius;
+    sum += w * c.intensity;
+  }
+  return clamp(sum / Math.max(1, cells.length * 0.45), 0, 1);
+}
+
+function localCoastDistance(x, y, size, waterMask, maxRadius = 8) {
+  for (let r = 1; r <= maxRadius; r++) {
+    for (let oy = -r; oy <= r; oy++) {
+      for (let ox = -r; ox <= r; ox++) {
+        const nx = x + ox;
+        const ny = y + oy;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+        if (waterMask[ny * size + nx]) return r;
+      }
+    }
+  }
+  return maxRadius;
 }
 
 function nearCoast(x, y, size, waterMask) {
