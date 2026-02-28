@@ -12,37 +12,55 @@ import {
   RUMOR_SOURCES
 } from './content.js';
 
+
+export const WORLDGEN_DEFAULTS = {
+  plateCount: 7,
+  seaLevel: 0.28,
+  ruggedness: 0.52,
+  hydrologyStrength: 0.58,
+  moistureBias: 0,
+  tempBias: 0,
+  forestDensity: 0.55,
+  swampDensity: 0.35,
+  desertHarshness: 0.4,
+  provinceTarget: 110,
+  factionCount: 7,
+  actorTarget: 180,
+  campaignName: 'Age of Ironbound',
+  skirmish: false
+};
 export function createRng(seed) {
   let s = seed >>> 0;
   return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
 }
 
-export function generateWorld(seed = 1337, size = 384) {
+export function generateWorld(seed = 1337, size = 384, settings = {}) {
+  const cfg = { ...WORLDGEN_DEFAULTS, ...settings };
   const rng = createRng(seed);
   const timings = {};
   const t0 = performance.now();
 
-  const tectonics = genTectonics(size, rng);
+  const tectonics = genTectonics(size, rng, cfg);
   timings.tectonics = performance.now() - t0;
 
   const t1 = performance.now();
-  const hydrology = genHydrology(size, tectonics.height, tectonics.moisture, rng);
+  const hydrology = genHydrology(size, tectonics.height, tectonics.moisture, rng, cfg);
   timings.hydrology = performance.now() - t1;
 
   const t2 = performance.now();
-  const climate = genClimate(size, tectonics.height, tectonics.moisture, hydrology, rng);
+  const climate = genClimate(size, tectonics.height, tectonics.moisture, hydrology, rng, cfg);
   timings.climate = performance.now() - t2;
 
   const t3 = performance.now();
-  const provinces = genProvinces(size, tectonics, climate, hydrology, rng);
+  const provinces = genProvinces(size, tectonics, climate, hydrology, rng, cfg);
   timings.provinces = performance.now() - t3;
 
   const t4 = performance.now();
-  const factions = genFactions(provinces, rng);
+  const factions = genFactions(provinces, rng, cfg);
   const settlements = genSettlements(provinces, rng);
   const tradeGraph = genTradeGraph(provinces, settlements, hydrology, rng);
   const wars = seedWars(factions, provinces, rng);
-  const actors = seedActors(provinces, factions, rng);
+  const actors = seedActors(provinces, factions, rng, cfg);
   const eventChains = seedEventChains(provinces, factions, actors, rng);
   const contracts = seedContracts(provinces, factions, actors, eventChains, rng, 1);
   const rumors = seedRumors(provinces, actors, rng, 1);
@@ -61,7 +79,7 @@ export function generateWorld(seed = 1337, size = 384) {
     speed: 2,
     overlay: 'terrain',
     randState: (seed ^ 0x9e3779b9) >>> 0,
-    generation: { timings, totalMs: generationTimeMs },
+    generation: { timings, totalMs: generationTimeMs, settings: cfg },
     maps: {
       height: tectonics.height,
       waterMask: tectonics.waterMask,
@@ -98,13 +116,13 @@ export function generateWorld(seed = 1337, size = 384) {
   };
 }
 
-function genTectonics(size, rng) {
+function genTectonics(size, rng, cfg) {
   const n = size * size;
   const height = new Float32Array(n);
   const moisture = new Float32Array(n);
   const waterMask = new Uint8Array(n);
 
-  const plateCount = 5 + Math.floor(rng() * 3);
+  const plateCount = Math.max(5, Math.min(12, Math.floor(cfg.plateCount)));
   const plates = Array.from({ length: plateCount }, () => ({
     x: rng() * size,
     y: rng() * size,
@@ -136,17 +154,18 @@ function genTectonics(size, rng) {
       const boundary = Math.max(0, 1 - Math.sqrt(Math.max(0, minB - minA)) / 24);
       const shelf = Math.min(Math.min(x, y), Math.min(size - 1 - x, size - 1 - y)) / (size * 0.23);
       const noise = fbm(x / size, y / size, rng);
-      const h = clamp(0.56 * noise + 0.31 * shelf + 0.33 * boundary + push - 0.12 * lat, 0, 1);
+      const rugged = cfg.ruggedness * 0.8 + 0.2;
+      const h = clamp((0.52 * noise + 0.31 * shelf + 0.33 * boundary + push - 0.12 * lat) * rugged + noise * (1 - rugged) * 0.35, 0, 1);
       height[i] = h;
       moisture[i] = clamp(0.58 * (1 - lat) + 0.36 * (1 - h) + (rng() - 0.5) * 0.12, 0, 1);
-      waterMask[i] = h < 0.28 ? 1 : 0;
+      waterMask[i] = h < cfg.seaLevel ? 1 : 0;
     }
   }
 
   return { height, moisture, waterMask };
 }
 
-function genHydrology(size, height, moisture, rng) {
+function genHydrology(size, height, moisture, rng, cfg) {
   const n = size * size;
   const flow = new Float32Array(n);
   const riverMask = new Uint8Array(n);
@@ -156,7 +175,7 @@ function genHydrology(size, height, moisture, rng) {
   const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => height[b] - height[a]);
 
   for (const i of order) {
-    if (height[i] < 0.28) continue;
+    if (height[i] < cfg.seaLevel) continue;
     flow[i] += 1;
     const x = i % size;
     const y = Math.floor(i / size);
@@ -179,19 +198,19 @@ function genHydrology(size, height, moisture, rng) {
 
     if (best !== i) {
       flow[best] += flow[i] * 0.98;
-      if (flow[i] > 18 && height[i] > 0.3) riverMask[i] = 1;
+      if (flow[i] > (26 - cfg.hydrologyStrength * 20) && height[i] > cfg.seaLevel + 0.03) riverMask[i] = 1;
     } else {
-      if (height[i] > 0.3 && flow[i] > 12) lakeMask[i] = 1;
+      if (height[i] > cfg.seaLevel + 0.02 && flow[i] > (18 - cfg.hydrologyStrength * 10)) lakeMask[i] = 1;
     }
 
     if (riverMask[i] && height[i] < 0.52) floodplainMask[i] = 1;
-    if (!riverMask[i] && moisture[i] > 0.74 && height[i] < 0.48 && rng() < 0.02) lakeMask[i] = 1;
+    if (!riverMask[i] && moisture[i] > (0.67 - cfg.swampDensity * 0.2) && height[i] < 0.48 && rng() < 0.02 + cfg.hydrologyStrength * 0.03) lakeMask[i] = 1;
   }
 
   return { flow, riverMask, lakeMask, floodplainMask };
 }
 
-function genClimate(size, height, moistureBase, hydrology, rng) {
+function genClimate(size, height, moistureBase, hydrology, rng, cfg) {
   const n = size * size;
   const temp = new Float32Array(n);
   const moisture = new Float32Array(n);
@@ -202,41 +221,41 @@ function genClimate(size, height, moistureBase, hydrology, rng) {
     for (let x = 0; x < size; x++) {
       const i = y * size + x;
       const elevCool = Math.max(0, height[i] - 0.35) * 0.55;
-      temp[i] = clamp(1 - lat - elevCool + (rng() - 0.5) * 0.08, 0, 1);
+      temp[i] = clamp(1 - lat - elevCool + cfg.tempBias * 0.25 + (rng() - 0.5) * 0.08, 0, 1);
 
       const riverBonus = hydrology.riverMask[i] ? 0.2 : 0;
       const lakeBonus = hydrology.lakeMask[i] ? 0.15 : 0;
       const inlandDry = Math.max(0, height[i] - 0.62) * 0.28;
-      moisture[i] = clamp(moistureBase[i] + riverBonus + lakeBonus - inlandDry, 0, 1);
+      moisture[i] = clamp(moistureBase[i] + riverBonus + lakeBonus - inlandDry + cfg.moistureBias * 0.25, 0, 1);
 
-      biome[i] = biomeBand(height[i], temp[i], moisture[i]);
+      biome[i] = biomeBand(height[i], temp[i], moisture[i], cfg);
     }
   }
 
   return { temp, moisture, biome };
 }
 
-function biomeBand(h, t, m) {
-  if (h < 0.28) return BIOMES.indexOf('ocean');
-  if (h < 0.33) return BIOMES.indexOf('coast');
+function biomeBand(h, t, m, cfg) {
+  if (h < cfg.seaLevel) return BIOMES.indexOf('ocean');
+  if (h < cfg.seaLevel + 0.05) return BIOMES.indexOf('coast');
   if (h > 0.85) return BIOMES.indexOf('peaks');
   if (h > 0.72) return BIOMES.indexOf('mountains');
   if (h > 0.55) return BIOMES.indexOf('hills');
-  if (m < 0.24 && t > 0.45) return BIOMES.indexOf('desert');
+  if (m < 0.22 + cfg.desertHarshness * 0.2 && t > 0.45) return BIOMES.indexOf('desert');
   if (m < 0.36) return BIOMES.indexOf('steppe');
-  if (m > 0.72) return BIOMES.indexOf('swamp');
-  if (m > 0.54) return BIOMES.indexOf('forest');
+  if (m > 0.72 - cfg.swampDensity * 0.18) return BIOMES.indexOf('swamp');
+  if (m > 0.52 - cfg.forestDensity * 0.18) return BIOMES.indexOf('forest');
   return BIOMES.indexOf('lowland');
 }
 
-function genProvinces(size, tectonics, climate, hydrology, rng) {
-  const target = 80 + Math.floor(rng() * 41);
+function genProvinces(size, tectonics, climate, hydrology, rng, cfg) {
+  const target = Math.max(80, Math.min(160, Math.floor(cfg.provinceTarget)));
   const seeds = [];
   while (seeds.length < target) {
     const x = Math.floor(rng() * size);
     const y = Math.floor(rng() * size);
     const i = y * size + x;
-    if (tectonics.waterMask[i]) continue;
+    if (tectonics.height[i] < cfg.seaLevel) continue;
     if (tectonics.height[i] > 0.9) continue;
     if (climate.biome[i] === BIOMES.indexOf('desert') && rng() < 0.7) continue;
     seeds.push({ id: seeds.length, x, y });
@@ -292,7 +311,7 @@ function genProvinces(size, tectonics, climate, hydrology, rng) {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = y * size + x;
-      if (tectonics.waterMask[i]) continue;
+      if (tectonics.height[i] < cfg.seaLevel) continue;
       let best = 0;
       let bestD = 1e9;
       for (const s of seeds) {
@@ -328,11 +347,11 @@ function genProvinces(size, tectonics, climate, hydrology, rng) {
   return provinces;
 }
 
-function genFactions(provinces, rng) {
+function genFactions(provinces, rng, cfg) {
   const names = ['Crown', 'League', 'Synod', 'Host', 'Compact', 'March', 'Order', 'Conclave'];
   const archetypes = ['militant', 'mercantile', 'religious', 'arcane', 'tribal'];
   const keys = Object.keys(DEITIES);
-  const factions = Array.from({ length: 5 + Math.floor(rng() * 4) }, (_, id) => ({
+  const factions = Array.from({ length: Math.max(5, Math.min(10, Math.floor(cfg.factionCount))) }, (_, id) => ({
     id,
     name: names[id],
     cultureId: pick(Object.keys(RACES_WORLD), rng),
@@ -427,12 +446,12 @@ function seedWars(factions, provinces, rng) {
   return wars;
 }
 
-function seedActors(provinces, factions, rng) {
+function seedActors(provinces, factions, rng, cfg) {
   const actors = [];
   const races = Object.keys(RACES_WORLD);
   const cultureKeys = Object.keys(CULTURE_NAMES);
   const types = ['ruler', 'general', 'hero', 'villain', 'prophet', 'monster'];
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < Math.max(120, Math.min(260, Math.floor(cfg.actorTarget))); i++) {
     const faction = factions[Math.floor(rng() * factions.length)];
     const culture = pick(cultureKeys, rng);
     const names = CULTURE_NAMES[culture] ?? CULTURE_NAMES.imperial;

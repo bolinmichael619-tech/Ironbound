@@ -134,3 +134,46 @@ function nearestProvince(world, index) {
   }
   return best;
 }
+
+
+export function renderWorldPreview(world, canvas) {
+  const ctx = canvas.getContext('2d');
+  const size = world.size;
+  const { height, moisture, riverMask, temp } = world.maps;
+  const img = ctx.createImageData(size, size);
+
+  for (let i = 0; i < height.length; i++) {
+    const o = i * 4;
+    const h = height[i];
+    const m = moisture[i];
+    const t = temp[i];
+    const tex = texturedTerrainColor(h, m, t, riverMask[i], i, size);
+    img.data[o] = tex[0];
+    img.data[o + 1] = tex[1];
+    img.data[o + 2] = tex[2];
+    img.data[o + 3] = 255;
+  }
+
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+}
+
+function texturedTerrainColor(h, m, t, river, idx, size) {
+  const x = idx % size;
+  const y = Math.floor(idx / size);
+  const grain = ((Math.sin(x * 0.27) + Math.cos(y * 0.21) + Math.sin((x + y) * 0.11)) * 0.5 + 0.5) * 18;
+  if (h < 0.28) return [14 + grain * 0.2, 42 + grain * 0.25, 86 + grain * 0.3];
+  if (h > 0.85) return [210 + grain * 0.1, 210 + grain * 0.1, 220 + grain * 0.1];
+  if (h > 0.72) return [145 + grain * 0.2, 136 + grain * 0.2, 140 + grain * 0.2];
+  if (river) return [58 + grain * 0.12, 130 + grain * 0.15, 165 + grain * 0.12];
+  if (m < 0.24 && t > 0.45) return [166 + grain * 0.22, 136 + grain * 0.16, 92 + grain * 0.1];
+  if (m > 0.72) return [32 + grain * 0.1, 98 + grain * 0.2, 72 + grain * 0.1];
+  if (m > 0.56) return [58 + grain * 0.15, 112 + grain * 0.2, 66 + grain * 0.12];
+  return [82 + grain * 0.13, 128 + grain * 0.16, 84 + grain * 0.13];
+}
+
