@@ -26,6 +26,7 @@ export const WORLDGEN_DEFAULTS = {
   swampDensity: 0.35,
   desertHarshness: 0.4,
   rainShadowStrength: 0.22,
+  channelIncision: 0.55,
   provinceTarget: 110,
   factionCount: 7,
   actorTarget: 180,
@@ -320,10 +321,11 @@ function genHydrology(size, tectonics, rng, cfg) {
   for (const i of indices) {
     if (waterMask[i]) continue;
 
-    flow[i] = Math.max(flow[i], 1 + moistureBase[i] * 1.4);
-
     const x = i % size;
     const y = Math.floor(i / size);
+    const latNorm = Math.abs((y / (size - 1)) * 2 - 1);
+    const precipProxy = clamp(moistureBase[i] * 0.7 + (1 - latNorm) * 0.3, 0, 1);
+    flow[i] = Math.max(flow[i], 1 + precipProxy * 1.8 + Math.max(0, slope[i] - 0.22) * 0.35);
 
     let best = i;
     let bestH = height[i];
@@ -393,6 +395,23 @@ function genHydrology(size, tectonics, rng, cfg) {
     }
   }
 
+  // River incision: carve channels after routing to produce realistic valleys.
+  const incisionStrength = clamp(cfg.channelIncision, 0.15, 1.2) * 0.0065;
+  for (let i = 0; i < n; i++) {
+    if (!riverMask[i] || waterMask[i]) continue;
+    const depth = clamp(flow[i] / (riverThreshold * 3.1), 0.05, 1);
+    const incision = incisionStrength * depth;
+    const floor = seaLevel + 0.002;
+    if (height[i] > floor) {
+      height[i] = Math.max(floor, height[i] - incision);
+      tectonics.erosionMap[i] = clamp(tectonics.erosionMap[i] + incision * 75, 0, 1);
+    }
+    const d = downstream[i];
+    if (d >= 0 && !waterMask[d]) {
+      height[d] = Math.max(floor, height[d] - incision * 0.6);
+    }
+  }
+
   for (let i = 0; i < n; i++) {
     if (waterMask[i]) {
       drainage[i] = 1;
@@ -451,14 +470,31 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
   const maxDist = size * 0.4;
 
   for (let y = 0; y < size; y++) {
-    const lat = Math.abs((y / (size - 1)) * 2 - 1);
+    const signedLat = (y / (size - 1)) * 2 - 1;
+    const lat = Math.abs(signedLat);
+
+    // Simple tri-cell atmosphere approximation:
+    // tropics mostly easterlies, mid/high latitudes mostly westerlies.
+    const windDir = lat < 0.28 ? -1 : 1;
+    const xStart = windDir > 0 ? 0 : size - 1;
+    const xEnd = windDir > 0 ? size : -1;
+    const xStep = windDir > 0 ? 1 : -1;
+
     let shadowCarry = 0;
-    for (let x = 0; x < size; x++) {
+    let humidityCarry = 0.45;
+
+    for (let x = xStart; x !== xEnd; x += xStep) {
       const i = y * size + x;
       const h = height[i];
 
+      if (nearCoast(x, y, size, waterMask) || waterMask[i]) {
+        humidityCarry = clamp(humidityCarry + 0.18, 0.1, 1);
+      } else {
+        humidityCarry = Math.max(0.08, humidityCarry - 0.015 - lat * 0.01);
+      }
+
       if (h > 0.62) shadowCarry = clamp(shadowCarry + (h - 0.62) * (0.5 + cfg.rainShadowStrength), 0, 1);
-      else shadowCarry = Math.max(0, shadowCarry - 0.04);
+      else shadowCarry = Math.max(0, shadowCarry - 0.038);
 
       const waterDistNorm = clamp(distanceToWater[i] / maxDist, 0, 1);
       const cont = smoothstep(0, 1, waterDistNorm);
@@ -477,7 +513,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       const coastBonus = nearCoast(x, y, size, waterMask) ? 0.12 : 0;
       const inlandDry = cont * 0.22 + Math.max(0, h - 0.62) * 0.28 + shadowCarry * cfg.rainShadowStrength;
 
-      let m = moistureBase[i] + riverBonus + lakeBonus + swampBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
+      let m = moistureBase[i] + humidityCarry * 0.22 + riverBonus + lakeBonus + swampBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
       m = clamp(m, 0, 1);
       moisture[i] = m;
 
@@ -537,7 +573,7 @@ function sampleProvinceSeeds(size, target, tectonics, climate, hydrology, rng, c
       if (h > 0.9) continue;
       if (b === BIOMES.indexOf('desert') && rng() < 0.65) continue;
 
-      const fertile = climate.moisture[i] * 0.45 + (1 - Math.abs(climate.temp[i] - 0.54)) * 0.25;
+      const fertile = climate.moisture[i] * 0.38 + climate.soilFertility[i] * 0.22 + (1 - Math.abs(climate.temp[i] - 0.54)) * 0.2;
       const river = hydrology.riverMask[i] ? 0.26 : 0;
       const lake = hydrology.lakeMask[i] ? 0.16 : 0;
       const pass = h > 0.58 && h < 0.74 ? 0.12 : 0;
@@ -637,6 +673,8 @@ function terrainMoveCost(i, tectonics, climate, hydrology) {
   else if (b === BIOMES.indexOf('peaks')) cost = 7;
 
   if (hydrology.riverMask[i]) cost += 1.8;
+  if (hydrology.floodplainMask[i]) cost -= 0.18;
+  cost += (1 - hydrology.drainage[i]) * 0.22;
   if (tectonics.slope[i] > 0.3) cost += tectonics.slope[i] * 2;
   return cost;
 }
@@ -806,9 +844,9 @@ function normalizeProvinceSizes(provinces, provinceMap, size, tectonics, climate
       p.expansionPressure = (p.expansionPressure ?? 0) + 5;
     }
 
-    p.travelCostBase = clamp(8 + p.avgElevation * 20 + p.riverDensity * 14 + (p.biomeType === 'mountains' ? 10 : 0), 6, 55);
-    p.tradeValue = clamp(p.tradeValue + p.riverDensity * 40 + (p.portNode ? 25 : 0) - (p.biomeType === 'desert' ? 10 : 0), 0, 120);
-    p.prosperity = clamp(p.prosperity + p.tradeValue * 0.08 - p.danger * 0.05, 0, 100);
+    p.travelCostBase = clamp(8 + p.avgElevation * 20 + p.riverDensity * 14 + (1 - p.drainageQuality) * 5 + (p.biomeType === 'mountains' ? 10 : 0), 6, 55);
+    p.tradeValue = clamp(p.tradeValue + p.riverDensity * 40 + p.floodplainShare * 25 + (p.portNode ? 25 : 0) - (p.biomeType === 'desert' ? 10 : 0), 0, 120);
+    p.prosperity = clamp(p.prosperity + p.tradeValue * 0.08 + p.soilFertility * 9 - p.danger * 0.05, 0, 100);
     p.infrastructure = clamp(p.infrastructure + p.tradeValue * 0.04, 0, 100);
   }
 
