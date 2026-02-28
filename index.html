@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ironbound Prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="toolbar">
+    <div class="group modes" id="modeTabs"></div>
+    <div class="group">
+      <label>Seed <input id="seedInput" type="number" value="1337" /></label>
+      <button id="regenBtn">Generate World</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="stepBtn">+1 Day</button>
+      <button id="step30Btn">+30 Days</button>
+      <button id="exportBtn">Export Snapshot</button>
+      <button id="importBtn">Import Snapshot</button>
+      <label>Speed <input id="speedInput" type="range" min="0" max="20" value="2" /></label>
+      <span id="speedLabel">2 d/s</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="left panel">
+      <h2 id="leftTitle">Campaign Map</h2>
+      <div id="stats" class="stats"></div>
+
+      <div id="mapFilters" class="screen-block">
+        <h3>Overlays</h3>
+        <div id="overlays" class="toggles"></div>
+        <h3>Tracked</h3>
+        <ul id="tracked" class="feed compact"></ul>
+      </div>
+
+      <div id="rumorFilters" class="screen-block hidden">
+        <h3>Rumor Filters</h3>
+        <label><input id="credHigh" type="checkbox" checked /> High credibility only</label>
+      </div>
+    </section>
+
+    <section class="center panel">
+      <canvas id="map" width="960" height="640"></canvas>
+      <ul id="centerList" class="feed hidden"></ul>
+    </section>
+
+    <section class="right panel">
+      <h2 id="rightTitle">Details</h2>
+      <div id="province"></div>
+      <h3>Now / Important / Tracked</h3>
+      <ul id="feed" class="feed"></ul>
+      <h3>Chronicle</h3>
+      <ul id="chronicle" class="feed"></ul>
+      <h3>Contracts</h3>
+      <ul id="contracts" class="feed"></ul>
+      <h3>Proclamations</h3>
+      <ul id="proclamations" class="feed"></ul>
+    </section>
+  </main>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
