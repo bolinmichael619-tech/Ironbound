@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ironbound Prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <section id="titleScreen" class="screen active">
+    <div class="title-card">
+      <h1>IRONBOUND</h1>
+      <p>Mercenary Chronicle Simulator</p>
+      <div class="title-actions">
+        <button id="newGameBtn">New Campaign</button>
+        <button id="loadGameBtn">Load Save</button>
+        <button id="skirmishBtn">Skirmish</button>
+      </div>
+      <div class="save-list" id="saveList"></div>
+    </div>
+  </section>
+
+  <section id="worldgenScreen" class="screen">
+    <div class="worldgen-shell">
+      <aside class="worldgen-panel">
+        <h2>World Setup</h2>
+        <label>Campaign Name <input id="campaignName" type="text" value="Age of Ironbound" /></label>
+        <label>Seed <input id="seedInput" type="number" value="1337" /></label>
+        <label>World Size
+          <select id="sizeInput">
+            <option value="256">256</option>
+            <option value="320">320</option>
+            <option value="384" selected>384</option>
+            <option value="448">448</option>
+          </select>
+        </label>
+        <label>Plate Count <input id="plateInput" type="range" min="5" max="12" value="7" /></label>
+        <label>Sea Level <input id="seaLevelInput" type="range" min="18" max="40" value="28" /></label>
+        <label>Ruggedness <input id="ruggednessInput" type="range" min="10" max="90" value="52" /></label>
+        <label>Hydrology Strength <input id="hydrologyInput" type="range" min="10" max="90" value="58" /></label>
+        <label>Moisture Bias <input id="moistureBiasInput" type="range" min="-40" max="40" value="0" /></label>
+        <label>Temperature Bias <input id="tempBiasInput" type="range" min="-40" max="40" value="0" /></label>
+        <label>Forest Density <input id="forestInput" type="range" min="5" max="95" value="55" /></label>
+        <label>Swamp Density <input id="swampInput" type="range" min="0" max="90" value="35" /></label>
+        <label>Desert Harshness <input id="desertInput" type="range" min="0" max="90" value="40" /></label>
+        <label>Province Target <input id="provinceInput" type="range" min="80" max="160" value="110" /></label>
+        <label>Faction Count <input id="factionInput" type="range" min="5" max="10" value="7" /></label>
+        <label>Actor Pool <input id="actorInput" type="range" min="120" max="260" value="180" /></label>
+
+        <div class="worldgen-actions">
+          <button id="generateBtn">Generate World</button>
+          <button id="acceptBtn">Accept & Continue</button>
+          <button id="backToTitleBtn">Back</button>
+        </div>
+
+        <div id="genStats" class="gen-stats"></div>
+      </aside>
+
+      <main class="worldgen-preview">
+        <canvas id="worldPreview" width="1024" height="768"></canvas>
+      </main>
+    </div>
+  </section>
+
+  <section id="campaignScreen" class="screen">
+    <header class="toolbar">
+      <div class="group modes" id="modeTabs"></div>
+      <div class="group">
+        <button id="toTitleBtn">Title</button>
+        <button id="saveBtn">Save</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="stepBtn">+1 Day</button>
+        <button id="step30Btn">+30 Days</button>
+        <label>Speed <input id="speedInput" type="range" min="0" max="20" value="2" /></label>
+        <span id="speedLabel">2 d/s</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="left panel">
+        <h2 id="leftTitle">Campaign Map</h2>
+        <div id="stats" class="stats"></div>
+
+        <div id="mapFilters" class="screen-block">
+          <h3>Overlays</h3>
+          <div id="overlays" class="toggles"></div>
+          <h3>Tracked</h3>
+          <ul id="tracked" class="feed compact"></ul>
+        </div>
+
+        <div id="rumorFilters" class="screen-block hidden">
+          <h3>Rumor Filters</h3>
+          <label><input id="credHigh" type="checkbox" checked /> High credibility only</label>
+        </div>
+      </section>
+
+      <section class="center panel">
+        <canvas id="map" width="960" height="640"></canvas>
+        <ul id="centerList" class="feed hidden"></ul>
+      </section>
+
+      <section class="right panel">
+        <h2 id="rightTitle">Details</h2>
+        <div id="province"></div>
+        <h3>Now / Important / Tracked</h3>
+        <ul id="feed" class="feed"></ul>
+        <h3>Chronicle</h3>
+        <ul id="chronicle" class="feed"></ul>
+        <h3>Contracts</h3>
+        <ul id="contracts" class="feed"></ul>
+        <h3>Proclamations</h3>
+        <ul id="proclamations" class="feed"></ul>
+      </section>
+    </main>
+  </section>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
