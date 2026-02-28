@@ -93,6 +93,8 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       riverPolylines: hydrology.riverPolylines.length,
       lakes: hydrology.lakeCount,
       swamps: hydrology.swampCount,
+      estuaries: hydrology.estuaryCount,
+      floodplains: hydrology.floodplainCount,
       provinces: provinces.length
     },
     maps: {
@@ -112,12 +114,16 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       lakeMask: hydrology.lakeMask,
       swampMask: hydrology.swampMask,
       floodplainMask: hydrology.floodplainMask,
+      estuaryMask: hydrology.estuaryMask,
+      drainage: hydrology.drainage,
       basinId: hydrology.basinId,
       temp: climate.temp,
       moisture: climate.moisture,
       rainShadow: climate.rainShadow,
       continentality: climate.continentality,
       windExposure: climate.windExposure,
+      evapotranspiration: climate.evapotranspiration,
+      soilFertility: climate.soilFertility,
       biome: climate.biome,
       biomeMoistureBand: climate.moistureBand,
       biomeTempBand: climate.tempBand
@@ -288,6 +294,8 @@ function genHydrology(size, tectonics, rng, cfg) {
   const lakeMask = new Uint8Array(n);
   const swampMask = new Uint8Array(n);
   const floodplainMask = new Uint8Array(n);
+  const estuaryMask = new Uint8Array(n);
+  const drainage = new Float32Array(n);
   const basinId = new Int32Array(n);
   const riverId = new Int32Array(n);
   basinId.fill(-1);
@@ -306,6 +314,8 @@ function genHydrology(size, tectonics, rng, cfg) {
   let riverCount = 0;
   let lakeCount = 0;
   let swampCount = 0;
+  let estuaryCount = 0;
+  let floodplainCount = 0;
 
   for (const i of indices) {
     if (waterMask[i]) continue;
@@ -345,7 +355,10 @@ function genHydrology(size, tectonics, rng, cfg) {
         riverCount += 1;
       }
 
-      if (riverMask[i] && slope[i] < 0.16 && height[i] < seaLevel + 0.24) floodplainMask[i] = 1;
+      if (riverMask[i] && slope[i] < 0.16 && height[i] < seaLevel + 0.24) {
+        if (!floodplainMask[i]) floodplainCount += 1;
+        floodplainMask[i] = 1;
+      }
     } else {
       basinId[i] = basinCount++;
       if (flow[i] > riverThreshold * 0.55 && height[i] > seaLevel + 0.01) {
@@ -372,7 +385,26 @@ function genHydrology(size, tectonics, rng, cfg) {
         const ny = y + oy;
         if (nx < 1 || ny < 1 || nx >= size - 1 || ny >= size - 1) continue;
         const ni = ny * size + nx;
-        if (!waterMask[ni] && height[ni] < seaLevel + 0.16 && slope[ni] < 0.18) floodplainMask[ni] = 1;
+        if (!waterMask[ni] && height[ni] < seaLevel + 0.16 && slope[ni] < 0.18) {
+          if (!floodplainMask[ni]) floodplainCount += 1;
+          floodplainMask[ni] = 1;
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    if (waterMask[i]) {
+      drainage[i] = 1;
+      continue;
+    }
+    drainage[i] = clamp(flow[i] / (riverThreshold * 2.6), 0, 1);
+    if (riverMask[i]) {
+      const x = i % size;
+      const y = Math.floor(i / size);
+      if (height[i] < seaLevel + 0.04 || nearCoast(x, y, size, waterMask)) {
+        estuaryMask[i] = 1;
+        estuaryCount += 1;
       }
     }
   }
@@ -387,12 +419,16 @@ function genHydrology(size, tectonics, rng, cfg) {
     lakeMask,
     swampMask,
     floodplainMask,
+    estuaryMask,
+    drainage,
     basinId,
     downstream,
     basinCount,
     riverCount,
     lakeCount,
-    swampCount
+    swampCount,
+    estuaryCount,
+    floodplainCount
   };
 }
 
@@ -403,6 +439,8 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
   const rainShadow = new Float32Array(n);
   const continentality = new Float32Array(n);
   const windExposure = new Float32Array(n);
+  const evapotranspiration = new Float32Array(n);
+  const soilFertility = new Float32Array(n);
   const biome = new Uint8Array(n);
   const tempBand = new Uint8Array(n);
   const moistureBand = new Uint8Array(n);
@@ -443,13 +481,21 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       m = clamp(m, 0, 1);
       moisture[i] = m;
 
+      const evap = clamp((t * 0.62 + (1 - m) * 0.38) * (0.8 + cont * 0.35), 0, 1);
+      evapotranspiration[i] = evap;
+
+      const alluvialBoost = hydrology.floodplainMask[i] ? 0.22 : 0;
+      const estuaryBoost = hydrology.estuaryMask[i] ? 0.14 : 0;
+      const erosionPenalty = tectonics.erosionMap[i] * 0.1;
+      soilFertility[i] = clamp(0.45 * m + 0.25 * (1 - Math.abs(t - 0.55)) + alluvialBoost + estuaryBoost - erosionPenalty, 0, 1);
+
       tempBand[i] = t < 0.27 ? 0 : t < 0.47 ? 1 : t < 0.68 ? 2 : 3;
       moistureBand[i] = m < 0.28 ? 0 : m < 0.56 ? 1 : 2;
       biome[i] = biomeBand(h, t, m, cfg);
     }
   }
 
-  return { temp, moisture, rainShadow, continentality, windExposure, biome, tempBand, moistureBand };
+  return { temp, moisture, rainShadow, continentality, windExposure, evapotranspiration, soilFertility, biome, tempBand, moistureBand };
 }
 
 function biomeBand(h, t, m, cfg) {
@@ -609,6 +655,9 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
     avgTemp: 0,
     avgMoisture: 0,
     riverDensity: 0,
+    floodplainShare: 0,
+    drainageQuality: 0,
+    soilFertility: 0,
     lakePresence: false,
     coastal: false,
     primaryResource: pick(RESOURCES, rng),
@@ -654,6 +703,9 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
     p.avgTemp += climate.temp[i];
     p.avgMoisture += climate.moisture[i];
     p.riverDensity += hydrology.riverMask[i];
+    p.floodplainShare += hydrology.floodplainMask[i];
+    p.drainageQuality += hydrology.drainage[i];
+    p.soilFertility += climate.soilFertility[i];
 
     if (hydrology.lakeMask[i]) p.lakePresence = true;
     if (tectonics.height[i] < 0.33) p.coastal = true;
@@ -668,8 +720,12 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
     p.avgTemp /= Math.max(1, p.cells);
     p.avgMoisture /= Math.max(1, p.cells);
     p.riverDensity /= Math.max(1, p.cells);
+    p.floodplainShare /= Math.max(1, p.cells);
+    p.drainageQuality /= Math.max(1, p.cells);
+    p.soilFertility /= Math.max(1, p.cells);
     p.elevationVar = Math.max(0.01, 0.28 * p.avgElevation * (1 - p.avgElevation));
 
+    p.classification = classifyProvinceFromContext(p);
     p.primaryResource = pick(primaryResourceFromContext(p), rng);
     p.secondaryResources = [pick(RESOURCES, rng), pick(RESOURCES, rng)].filter((r, idx, arr) => r !== p.primaryResource && arr.indexOf(r) === idx);
     if (p.secondaryResources.length < 2) p.secondaryResources.push('Stone');
@@ -679,15 +735,30 @@ function buildProvinceObjects(size, seeds, provinceMap, tectonics, climate, hydr
 }
 
 function primaryResourceFromContext(p) {
-  if (p.coastal && p.tradeNode) return ['Exotic Trade', 'Salt', 'Livestock'];
-  if (p.biomeType === 'forest') return ['Timber', 'Livestock'];
-  if (p.biomeType === 'swamp') return ['Livestock', 'Arcane Reagent'];
+  if (p.coastal && p.tradeNode && p.soilFertility > 0.58) return ['Exotic Trade', 'Grain', 'Salt'];
+  if (p.coastal && p.drainageQuality > 0.55) return ['Salt', 'Livestock', 'Exotic Trade'];
+  if (p.biomeType === 'forest' && p.soilFertility > 0.45) return ['Timber', 'Grain', 'Livestock'];
+  if (p.biomeType === 'swamp') return ['Livestock', 'Arcane Reagent', 'Timber'];
   if (p.biomeType === 'desert') return ['Salt', 'Stone'];
   if (p.biomeType === 'mountains' || p.biomeType === 'peaks') return ['Iron', 'Stone', 'Silver'];
-  if (p.riverDensity > 0.08) return ['Grain', 'Livestock'];
+  if (p.riverDensity > 0.08 || p.floodplainShare > 0.06) return ['Grain', 'Livestock', 'Timber'];
   if (p.faithStrength > 70) return ['Faith Relic', 'Grain'];
   if (p.arcaneSaturation > 70) return ['Arcane Reagent', 'Stone'];
-  return ['Grain', 'Livestock', 'Timber'];
+  if (p.soilFertility > 0.6) return ['Grain', 'Livestock', 'Timber'];
+  return ['Grain', 'Livestock', 'Stone'];
+}
+
+function classifyProvinceFromContext(p) {
+  if (p.coastal && p.tradeNode && p.riverDensity > 0.08) return 'Coastal Port';
+  if (p.riverDensity > 0.14 || p.floodplainShare > 0.09) return 'River Valley';
+  if (p.biomeType === 'mountains' && p.riverDensity > 0.03) return 'Mountain Pass';
+  if (p.biomeType === 'mountains' || p.biomeType === 'peaks') return 'Highland Bastion';
+  if (p.biomeType === 'swamp') return 'Swamp Marsh';
+  if (p.biomeType === 'desert') return 'Desert Basin';
+  if (p.tradeValue > 70 && p.infrastructure > 55) return 'Trade Hub';
+  if (p.stability > 70 && p.prosperity > 70) return 'Imperial Core';
+  if (p.danger > 65 || p.lawless) return 'Frontier Wild';
+  return p.classification;
 }
 
 function computeNeighbors(size, provinceMap, provinces) {
