@@ -1,6 +1,6 @@
 import { generateWorld, WORLDGEN_DEFAULTS } from './worldgen.js';
 import { tickDay } from './sim.js';
-import { renderMap, renderWorldPreview } from './render.js';
+import { renderMap, renderWorldPreview, screenToWorldMap } from './render.js';
 import { MODES, OVERLAYS } from './data.js';
 
 const SAVE_PREFIX = 'ironbound_save_slot_';
@@ -236,8 +236,9 @@ function bindCampaignControls() {
 
   ui.map.onclick = (evt) => {
     const rect = ui.map.getBoundingClientRect();
-    const x = Math.floor(((evt.clientX - rect.left) / rect.width) * world.size);
-    const y = Math.floor(((evt.clientY - rect.top) / rect.height) * world.size);
+    const sx = evt.clientX - rect.left;
+    const sy = evt.clientY - rect.top;
+    const { x, y } = screenToWorldMap(world, ui.map, sx, sy);
     world.selectedProvince = nearestProvince(x, y);
     world.pulseProvince = world.selectedProvince;
     world.pulseUntil = performance.now() + 2200;

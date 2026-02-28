@@ -1,32 +1,56 @@
 let offscreen;
 
+const MAP_RENDER_TARGET = 220;
+
 export function renderMap(world, canvas) {
   const ctx = canvas.getContext('2d');
   const size = world.size;
-  const { height, moisture, riverMask, temp } = world.maps;
-  const img = ctx.createImageData(size, size);
+  const { height, moisture, riverMask, temp, slope } = world.maps;
+  const projection = buildIsoProjection(size, canvas, MAP_RENDER_TARGET);
 
-  for (let i = 0; i < height.length; i++) {
-    const o = i * 4;
-    const col = colorFor(world, i, height[i], moisture[i], riverMask[i], temp[i]);
-    img.data[o] = col[0];
-    img.data[o + 1] = col[1];
-    img.data[o + 2] = col[2];
-    img.data[o + 3] = 255;
+  ctx.fillStyle = '#020817';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+
+  for (let gy = 0; gy < projection.gridH; gy++) {
+    for (let gx = 0; gx < projection.gridW; gx++) {
+      const x = gx * projection.step;
+      const y = gy * projection.step;
+      const i = y * size + x;
+
+      const [sx, sy] = projectPoint(projection, gx, gy, height[i]);
+      const base = colorFor(world, i, height[i], moisture[i], riverMask[i], temp[i]);
+      const shade = computeIsoShade(height, size, x, y, projection.step);
+      const lit = litColor(base, slope?.[i] ?? 0, shade);
+      drawIsoTile(ctx, sx, sy, projection.tileW, projection.tileH, lit);
+
+      if (riverMask[i] && height[i] > 0.28) {
+        ctx.strokeStyle = 'rgba(72,162,245,0.72)';
+        ctx.lineWidth = Math.max(1, projection.tileW * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(sx - projection.tileW * 0.1, sy - projection.tileH * 0.08);
+        ctx.lineTo(sx + projection.tileW * 0.16, sy + projection.tileH * 0.12);
+        ctx.stroke();
+      }
+    }
   }
 
-  offscreen ??= document.createElement('canvas');
-  offscreen.width = size;
-  offscreen.height = size;
-  offscreen.getContext('2d').putImageData(img, 0, 0);
+  drawMapHud(ctx, world, canvas, projection);
 
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+  drawTradeRoutes(world, ctx, projection);
+  drawAcceptedContractMarkers(world, ctx, projection);
+  drawPulse(world, ctx, projection);
+}
 
-  drawTradeRoutes(world, ctx, canvas);
-  drawAcceptedContractMarkers(world, ctx, canvas);
-  drawPulse(world, ctx, canvas);
+export function screenToWorldMap(world, canvas, sx, sy) {
+  const proj = buildIsoProjection(world.size, canvas, MAP_RENDER_TARGET);
+  const ax = (sx - proj.originX) / (proj.tileW * 0.5);
+  const ay = (sy - proj.originY) / (proj.tileH * 0.5);
+  const gx = (ax + ay) * 0.5;
+  const gy = (ay - ax) * 0.5;
+  const x = clamp(Math.round(gx * proj.step), 0, world.size - 1);
+  const y = clamp(Math.round(gy * proj.step), 0, world.size - 1);
+  return { x, y };
 }
 
 function colorFor(world, i, h, m, r, t) {
@@ -75,13 +99,12 @@ function colorFor(world, i, h, m, r, t) {
   }
 }
 
-function drawAcceptedContractMarkers(world, ctx, canvas) {
+function drawAcceptedContractMarkers(world, ctx, projection) {
   for (const c of world.contracts) {
     if (c.status !== 'accepted') continue;
     const p = world.provinces[c.provinceId];
     if (!p) continue;
-    const px = (p.centerX / world.size) * canvas.width;
-    const py = (p.centerY / world.size) * canvas.height;
+    const [px, py] = projectWorld(projection, p.centerX, p.centerY, world.maps.height[p.centerY * world.size + p.centerX]);
     ctx.beginPath();
     ctx.arc(px, py, 4, 0, Math.PI * 2);
     ctx.fillStyle = '#f0c85a';
@@ -92,26 +115,29 @@ function drawAcceptedContractMarkers(world, ctx, canvas) {
   }
 }
 
-function drawTradeRoutes(world, ctx, canvas) {
+function drawTradeRoutes(world, ctx, projection) {
   if (world.overlay !== 'trade') return;
   ctx.lineWidth = 1;
   for (const edge of world.tradeGraph.edges) {
     const a = world.provinces[edge.from];
     const b = world.provinces[edge.to];
     if (!a || !b) continue;
+    const ah = world.maps.height[a.centerY * world.size + a.centerX];
+    const bh = world.maps.height[b.centerY * world.size + b.centerX];
+    const [ax, ay] = projectWorld(projection, a.centerX, a.centerY, ah);
+    const [bx, by] = projectWorld(projection, b.centerX, b.centerY, bh);
     ctx.beginPath();
-    ctx.moveTo((a.centerX / world.size) * canvas.width, (a.centerY / world.size) * canvas.height);
-    ctx.lineTo((b.centerX / world.size) * canvas.width, (b.centerY / world.size) * canvas.height);
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
     ctx.strokeStyle = `rgba(240,220,160,${edge.reliability * 0.8})`;
     ctx.stroke();
   }
 }
 
-function drawPulse(world, ctx, canvas) {
+function drawPulse(world, ctx, projection) {
   if (world.pulseProvince == null || performance.now() >= world.pulseUntil) return;
   const p = world.provinces[world.pulseProvince];
-  const px = (p.centerX / world.size) * canvas.width;
-  const py = (p.centerY / world.size) * canvas.height;
+  const [px, py] = projectWorld(projection, p.centerX, p.centerY, world.maps.height[p.centerY * world.size + p.centerX]);
   const t = (world.pulseUntil - performance.now()) / 2200;
   ctx.beginPath();
   ctx.arc(px, py, 10 + (1 - t) * 36, 0, Math.PI * 2);
@@ -133,6 +159,59 @@ function nearestProvince(world, index) {
     }
   }
   return best;
+}
+
+function buildIsoProjection(size, canvas, targetResolution = 220) {
+  const step = Math.max(1, Math.floor(size / Math.min(targetResolution, size)));
+  const gridW = Math.max(1, Math.floor(size / step));
+  const gridH = Math.max(1, Math.floor(size / step));
+  const tileW = Math.max(2, Math.floor(Math.min(canvas.width * 0.82 / gridW, canvas.height * 0.84 / gridH) * 2));
+  const tileH = Math.max(2, Math.floor(tileW * 0.5));
+  const elevScale = Math.max(2, tileH * 1.45);
+  const originX = canvas.width * 0.48;
+  const originY = canvas.height * 0.08;
+  return { step, gridW, gridH, tileW, tileH, elevScale, originX, originY };
+}
+
+function projectPoint(proj, gx, gy, h = 0) {
+  const sx = (gx - gy) * (proj.tileW * 0.5) + proj.originX;
+  const sy = (gx + gy) * (proj.tileH * 0.5) + proj.originY - h * proj.elevScale;
+  return [sx, sy];
+}
+
+function projectWorld(proj, x, y, h = 0) {
+  return projectPoint(proj, x / proj.step, y / proj.step, h);
+}
+
+function litColor(base, slope = 0, shade = 0.5) {
+  const light = 0.78 + shade * 0.35 - slope * 0.2;
+  return [
+    clamp(base[0] * light, 0, 255),
+    clamp(base[1] * light, 0, 255),
+    clamp(base[2] * light, 0, 255)
+  ];
+}
+
+function drawMapHud(ctx, world, canvas, projection) {
+  ctx.fillStyle = '#000000bb';
+  ctx.fillRect(8, 8, canvas.width - 16, 22);
+  ctx.strokeStyle = '#7f6228';
+  ctx.strokeRect(8, 8, canvas.width - 16, 22);
+  ctx.fillStyle = '#d0aa54';
+  ctx.font = '12px monospace';
+  ctx.fillText('MAP  RUMORS  CONTRACTS  INVENTORY  CAMP  CHRONICLE  BESTIARY', 16, 23);
+  ctx.fillText(`ZOOM ${(projection.step / Math.max(1, world.size) * 64).toFixed(2)}x`, canvas.width - 110, 23);
+
+  const miniW = 132;
+  const miniH = 108;
+  const mx = canvas.width - miniW - 18;
+  const my = canvas.height - miniH - 18;
+  ctx.fillStyle = '#040a13d6';
+  ctx.fillRect(mx, my, miniW, miniH);
+  ctx.strokeStyle = '#7f6228';
+  ctx.strokeRect(mx, my, miniW, miniH);
+  ctx.fillStyle = '#d0aa54';
+  ctx.fillText('WORLD', mx + 6, my + miniH - 6);
 }
 
 
@@ -288,4 +367,8 @@ function computeIsoShade(height, size, x, y, step) {
   const hx = height[y * size + x1] - h;
   const hy = height[y1 * size + x] - h;
   return Math.max(0, Math.min(1, 0.5 + hx * 2.4 - hy * 1.9));
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
 }
