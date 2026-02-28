@@ -16,12 +16,16 @@ export const WORLDGEN_DEFAULTS = {
   plateCount: 7,
   seaLevel: 0.28,
   ruggedness: 0.52,
+  erosionPasses: 2,
+  coastalShelfWidth: 0.24,
   hydrologyStrength: 0.58,
+  riverSinuosity: 0.35,
   moistureBias: 0,
   tempBias: 0,
   forestDensity: 0.55,
   swampDensity: 0.35,
   desertHarshness: 0.4,
+  rainShadowStrength: 0.22,
   provinceTarget: 110,
   factionCount: 7,
   actorTarget: 180,
@@ -86,7 +90,9 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       plateCount: tectonics.plates.length,
       basinCount: hydrology.basinCount,
       riverSegments: hydrology.riverCount,
+      riverPolylines: hydrology.riverPolylines.length,
       lakes: hydrology.lakeCount,
+      swamps: hydrology.swampCount,
       provinces: provinces.length
     },
     maps: {
@@ -97,14 +103,21 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       stressMap: tectonics.stressMap,
       ridgeMap: tectonics.ridgeMap,
       slope: tectonics.slope,
+      erosionMap: tectonics.erosionMap,
+      terrainClass: tectonics.terrainClass,
       flow: hydrology.flow,
       riverMask: hydrology.riverMask,
+      riverId: hydrology.riverId,
+      riverPolylines: hydrology.riverPolylines,
       lakeMask: hydrology.lakeMask,
+      swampMask: hydrology.swampMask,
       floodplainMask: hydrology.floodplainMask,
       basinId: hydrology.basinId,
       temp: climate.temp,
       moisture: climate.moisture,
       rainShadow: climate.rainShadow,
+      continentality: climate.continentality,
+      windExposure: climate.windExposure,
       biome: climate.biome,
       biomeMoistureBand: climate.moistureBand,
       biomeTempBand: climate.tempBand
@@ -142,6 +155,8 @@ function genTectonics(size, rng, cfg) {
   const stressMap = new Float32Array(n);
   const ridgeMap = new Float32Array(n);
   const slope = new Float32Array(n);
+  const erosionMap = new Float32Array(n);
+  const terrainClass = new Uint8Array(n);
 
   const plateCount = clampInt(cfg.plateCount, 5, 12);
   const plates = Array.from({ length: plateCount }, (_, id) => {
@@ -161,6 +176,7 @@ function genTectonics(size, rng, cfg) {
   const seaLevel = clamp(cfg.seaLevel, 0.18, 0.4);
   const noiseSeedA = Math.floor(rng() * 1e9);
   const noiseSeedB = Math.floor(rng() * 1e9);
+  const shelfWidth = clamp(cfg.coastalShelfWidth, 0.16, 0.34);
 
   for (let y = 0; y < size; y++) {
     const lat = Math.abs((y / (size - 1)) * 2 - 1);
@@ -211,7 +227,7 @@ function genTectonics(size, rng, cfg) {
       const riftDrop = divergent * 0.24;
       const transformRidge = transform * 0.15;
 
-      const edgeShelf = Math.min(Math.min(x, y), Math.min(size - 1 - x, size - 1 - y)) / (size * 0.24);
+      const edgeShelf = Math.min(Math.min(x, y), Math.min(size - 1 - x, size - 1 - y)) / (size * shelfWidth);
       const shelfCurve = smoothstep(0, 1, edgeShelf);
 
       const warpA = fbm(
@@ -235,16 +251,32 @@ function genTectonics(size, rng, cfg) {
     }
   }
 
+  for (let pass = 0; pass < clampInt(cfg.erosionPasses, 0, 5); pass++) {
+    thermalErosionPass(size, height, ridgeMap, waterMask, erosionMap);
+  }
+
   for (let y = 1; y < size - 1; y++) {
     for (let x = 1; x < size - 1; x++) {
       const i = y * size + x;
       const hx = height[i + 1] - height[i - 1];
       const hy = height[i + size] - height[i - size];
       slope[i] = clamp(Math.hypot(hx, hy) * 2.4, 0, 1);
+
+      terrainClass[i] = height[i] < seaLevel
+        ? 0
+        : height[i] < seaLevel + 0.05
+          ? 1
+          : height[i] < 0.55
+            ? 2
+            : height[i] < 0.72
+              ? 3
+              : height[i] < 0.85
+                ? 4
+                : 5;
     }
   }
 
-  return { height, moistureBase, waterMask, plateIndex, stressMap, ridgeMap, slope, plates };
+  return { height, moistureBase, waterMask, plateIndex, stressMap, ridgeMap, slope, erosionMap, terrainClass, plates };
 }
 
 function genHydrology(size, tectonics, rng, cfg) {
@@ -254,9 +286,12 @@ function genHydrology(size, tectonics, rng, cfg) {
   const flow = new Float32Array(n);
   const riverMask = new Uint8Array(n);
   const lakeMask = new Uint8Array(n);
+  const swampMask = new Uint8Array(n);
   const floodplainMask = new Uint8Array(n);
   const basinId = new Int32Array(n);
+  const riverId = new Int32Array(n);
   basinId.fill(-1);
+  riverId.fill(-1);
 
   const downstream = new Int32Array(n);
   downstream.fill(-1);
@@ -265,10 +300,12 @@ function genHydrology(size, tectonics, rng, cfg) {
   indices.sort((a, b) => height[b] - height[a]);
 
   const seaLevel = clamp(cfg.seaLevel, 0.18, 0.4);
-  const riverThreshold = 15 + (1 - clamp(cfg.hydrologyStrength, 0.1, 0.95)) * 18;
+  const hydroStrength = clamp(cfg.hydrologyStrength, 0.1, 0.95);
+  const riverThreshold = 14 + (1 - hydroStrength) * 20;
   let basinCount = 0;
   let riverCount = 0;
   let lakeCount = 0;
+  let swampCount = 0;
 
   for (const i of indices) {
     if (waterMask[i]) continue;
@@ -288,8 +325,10 @@ function genHydrology(size, tectonics, rng, cfg) {
         const ny = y + oy;
         if (nx < 1 || ny < 1 || nx >= size - 1 || ny >= size - 1) continue;
         const ni = ny * size + nx;
-        if (height[ni] < bestH) {
-          bestH = height[ni];
+        const sinTerm = Math.sin((i + ni) * 0.001) * clamp(cfg.riverSinuosity, 0, 1) * 0.004;
+        const candidate = height[ni] + sinTerm;
+        if (candidate < bestH) {
+          bestH = candidate;
           best = ni;
         }
       }
@@ -302,13 +341,13 @@ function genHydrology(size, tectonics, rng, cfg) {
       const riverChance = flow[i] / riverThreshold;
       if (riverChance > 1 && height[i] > seaLevel + 0.012) {
         riverMask[i] = 1;
+        riverId[i] = riverCount;
         riverCount += 1;
       }
 
       if (riverMask[i] && slope[i] < 0.16 && height[i] < seaLevel + 0.24) floodplainMask[i] = 1;
     } else {
-      const basin = basinCount++;
-      basinId[i] = basin;
+      basinId[i] = basinCount++;
       if (flow[i] > riverThreshold * 0.55 && height[i] > seaLevel + 0.01) {
         lakeMask[i] = 1;
         lakeCount += 1;
@@ -316,7 +355,10 @@ function genHydrology(size, tectonics, rng, cfg) {
     }
 
     if (!lakeMask[i] && moistureBase[i] > 0.72 && slope[i] < 0.08 && height[i] < seaLevel + 0.22) {
-      if (rng() < 0.018 + cfg.swampDensity * 0.03) lakeMask[i] = 1;
+      if (rng() < 0.018 + cfg.swampDensity * 0.03) {
+        swampMask[i] = 1;
+        swampCount += 1;
+      }
     }
   }
 
@@ -335,16 +377,22 @@ function genHydrology(size, tectonics, rng, cfg) {
     }
   }
 
+  const riverPolylines = traceRiverPolylines(size, riverMask, downstream, flow, riverThreshold);
+
   return {
     flow,
     riverMask,
+    riverId,
+    riverPolylines,
     lakeMask,
+    swampMask,
     floodplainMask,
     basinId,
     downstream,
     basinCount,
     riverCount,
-    lakeCount
+    lakeCount,
+    swampCount
   };
 }
 
@@ -353,12 +401,16 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
   const temp = new Float32Array(n);
   const moisture = new Float32Array(n);
   const rainShadow = new Float32Array(n);
+  const continentality = new Float32Array(n);
+  const windExposure = new Float32Array(n);
   const biome = new Uint8Array(n);
   const tempBand = new Uint8Array(n);
   const moistureBand = new Uint8Array(n);
 
   const { height, moistureBase, waterMask } = tectonics;
-  const { riverMask, lakeMask } = hydrology;
+  const { riverMask, lakeMask, swampMask } = hydrology;
+  const distanceToWater = buildDistanceToWater(size, waterMask, lakeMask);
+  const maxDist = size * 0.4;
 
   for (let y = 0; y < size; y++) {
     const lat = Math.abs((y / (size - 1)) * 2 - 1);
@@ -367,20 +419,27 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
       const i = y * size + x;
       const h = height[i];
 
-      if (h > 0.62) shadowCarry = clamp(shadowCarry + (h - 0.62) * 0.6, 0, 1);
+      if (h > 0.62) shadowCarry = clamp(shadowCarry + (h - 0.62) * (0.5 + cfg.rainShadowStrength), 0, 1);
       else shadowCarry = Math.max(0, shadowCarry - 0.04);
 
+      const waterDistNorm = clamp(distanceToWater[i] / maxDist, 0, 1);
+      const cont = smoothstep(0, 1, waterDistNorm);
+      continentality[i] = cont;
+      windExposure[i] = 1 - shadowCarry;
+
       const elevCool = Math.max(0, h - 0.35) * 0.56;
-      const t = clamp(1 - lat - elevCool + cfg.tempBias * 0.25 + (rng() - 0.5) * 0.06, 0, 1);
+      const inlandSwing = (cont - 0.5) * 0.14;
+      const t = clamp(1 - lat - elevCool - inlandSwing + cfg.tempBias * 0.25 + (rng() - 0.5) * 0.05, 0, 1);
       temp[i] = t;
       rainShadow[i] = shadowCarry;
 
       const riverBonus = riverMask[i] ? 0.18 : 0;
       const lakeBonus = lakeMask[i] ? 0.16 : 0;
+      const swampBonus = swampMask[i] ? 0.08 : 0;
       const coastBonus = nearCoast(x, y, size, waterMask) ? 0.12 : 0;
-      const inlandDry = Math.max(0, h - 0.62) * 0.28 + shadowCarry * 0.22;
+      const inlandDry = cont * 0.22 + Math.max(0, h - 0.62) * 0.28 + shadowCarry * cfg.rainShadowStrength;
 
-      let m = moistureBase[i] + riverBonus + lakeBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
+      let m = moistureBase[i] + riverBonus + lakeBonus + swampBonus + coastBonus - inlandDry + cfg.moistureBias * 0.24;
       m = clamp(m, 0, 1);
       moisture[i] = m;
 
@@ -390,7 +449,7 @@ function genClimate(size, tectonics, hydrology, rng, cfg) {
     }
   }
 
-  return { temp, moisture, rainShadow, biome, tempBand, moistureBand };
+  return { temp, moisture, rainShadow, continentality, windExposure, biome, tempBand, moistureBand };
 }
 
 function biomeBand(h, t, m, cfg) {
@@ -1021,6 +1080,88 @@ function seedBestiary(rng) {
     lastSeen: `P${1 + Math.floor(rng() * 120)}`,
     completeness: 20 + Math.floor(rng() * 75)
   }));
+}
+
+
+function thermalErosionPass(size, height, ridgeMap, waterMask, erosionMap) {
+  const n = size * size;
+  const delta = new Float32Array(n);
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      const i = y * size + x;
+      if (waterMask[i]) continue;
+      const h = height[i];
+      let steepest = i;
+      let maxDrop = 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          if (!ox && !oy) continue;
+          const ni = (y + oy) * size + (x + ox);
+          const drop = h - height[ni];
+          if (drop > maxDrop) {
+            maxDrop = drop;
+            steepest = ni;
+          }
+        }
+      }
+      if (steepest !== i && maxDrop > 0.015) {
+        const move = Math.min(maxDrop * 0.18, 0.02) * (1 - ridgeMap[i] * 0.4);
+        delta[i] -= move;
+        delta[steepest] += move;
+        erosionMap[i] = clamp(erosionMap[i] + move * 24, 0, 1);
+      }
+    }
+  }
+  for (let i = 0; i < n; i++) height[i] = clamp(height[i] + delta[i], 0, 1);
+}
+
+function traceRiverPolylines(size, riverMask, downstream, flow, threshold) {
+  const lines = [];
+  const visited = new Uint8Array(riverMask.length);
+  for (let i = 0; i < riverMask.length; i++) {
+    if (!riverMask[i] || visited[i] || flow[i] < threshold * 0.7) continue;
+    const line = [];
+    let cur = i;
+    let guard = 0;
+    while (cur >= 0 && riverMask[cur] && guard < 512) {
+      if (visited[cur]) break;
+      visited[cur] = 1;
+      const x = cur % size;
+      const y = Math.floor(cur / size);
+      line.push({ x, y });
+      const next = downstream[cur];
+      if (next < 0 || next === cur) break;
+      cur = next;
+      guard += 1;
+    }
+    if (line.length > 3) lines.push(line);
+  }
+  return lines;
+}
+
+function buildDistanceToWater(size, waterMask, lakeMask) {
+  const n = size * size;
+  const dist = new Float32Array(n);
+  const inf = 1e9;
+  for (let i = 0; i < n; i++) dist[i] = (waterMask[i] || lakeMask[i]) ? 0 : inf;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      if (x > 0) dist[i] = Math.min(dist[i], dist[i - 1] + 1);
+      if (y > 0) dist[i] = Math.min(dist[i], dist[i - size] + 1);
+    }
+  }
+
+  for (let y = size - 1; y >= 0; y--) {
+    for (let x = size - 1; x >= 0; x--) {
+      const i = y * size + x;
+      if (x + 1 < size) dist[i] = Math.min(dist[i], dist[i + 1] + 1);
+      if (y + 1 < size) dist[i] = Math.min(dist[i], dist[i + size] + 1);
+    }
+  }
+
+  return dist;
 }
 
 function nearCoast(x, y, size, waterMask) {
