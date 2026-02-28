@@ -4,7 +4,11 @@ import { renderMap, renderWorldPreview, screenToWorldMap } from './render.js';
 import { MODES, OVERLAYS } from './data.js';
 
 const SAVE_PREFIX = 'ironbound_save_slot_';
+const DAYLIGHT_SECONDS = 30 * 60;
+const NIGHT_SECONDS = 20 * 60;
+const CYCLE_SECONDS = DAYLIGHT_SECONDS + NIGHT_SECONDS;
 let world = null;
+let lastLoopTs = performance.now();
 
 const ui = {
   titleScreen: document.getElementById('titleScreen'),
@@ -63,11 +67,25 @@ const ui = {
 };
 
 const campaignLoop = setInterval(() => {
+  const now = performance.now();
+  const deltaSec = Math.max(0, (now - lastLoopTs) / 1000);
+  lastLoopTs = now;
+
   if (!world || isScreen('titleScreen') || isScreen('worldgenScreen')) return;
   if (world.paused) return;
-  for (let i = 0; i < world.speed; i++) tickDay(world);
+
+  const timeScale = world.timeScale ?? 1;
+  world.cycleElapsed = (world.cycleElapsed ?? 0) + deltaSec * timeScale;
+  world.timeOfDay = (world.cycleElapsed % CYCLE_SECONDS + CYCLE_SECONDS) % CYCLE_SECONDS;
+  world.dayPhase = world.timeOfDay < DAYLIGHT_SECONDS ? 'Day' : 'Night';
+
+  while (world.cycleElapsed >= CYCLE_SECONDS) {
+    tickDay(world);
+    world.cycleElapsed -= CYCLE_SECONDS;
+  }
+
   refreshCampaign();
-}, 1000);
+}, 250);
 
 void campaignLoop;
 
@@ -173,10 +191,16 @@ function buildPreviewWorld(skirmish) {
 
 function enterCampaign() {
   if (!world) return;
+  world.timeScale = world.timeScale ?? 1;
+  world.cycleElapsed = world.cycleElapsed ?? 0;
+  world.timeOfDay = world.timeOfDay ?? 0;
+  world.dayPhase = world.dayPhase ?? 'Day';
   showScreen('campaignScreen');
   buildModeTabs();
   buildOverlayControls();
   bindCampaignControls();
+  ui.speedInput.value = String(Math.round(world.timeScale * 4));
+  ui.speedLabel.textContent = `${world.timeScale.toFixed(2)}x cycle`;
   refreshCampaign();
 }
 
@@ -221,8 +245,9 @@ function bindCampaignControls() {
   ui.stepBtn.onclick = () => { tickDay(world); refreshCampaign(); };
   ui.step30Btn.onclick = () => { for (let i = 0; i < 30; i++) tickDay(world); refreshCampaign(); };
   ui.speedInput.oninput = () => {
-    world.speed = Number(ui.speedInput.value);
-    ui.speedLabel.textContent = `${world.speed} d/s`;
+    const raw = Number(ui.speedInput.value);
+    world.timeScale = Math.max(0.25, raw / 4 || 0.25);
+    ui.speedLabel.textContent = `${world.timeScale.toFixed(2)}x cycle`;
   };
   ui.credHigh.oninput = refreshCampaign;
 
@@ -362,6 +387,8 @@ function refreshLeft() {
   ui.stats.innerHTML = [
     ['Campaign', world.generation.settings.campaignName],
     ['Day', world.day], ['Age', world.age], ['Mode', world.mode], ['Paused', world.paused ? 'Yes' : 'No'],
+    ['Phase', world.dayPhase ?? 'Day'],
+    ['Cycle', formatCycleClock(world.timeOfDay ?? 0)],
     ['Gen Time', `${world.generation.totalMs.toFixed(1)}ms`], ['Provinces', world.provinces.length], ['Factions', world.factions.length], ['Actors', world.actors.length], ['Wars', world.wars.length],
     ['Contracts(accepted)', accepted], ['Trade Reliability', `${tradeReliability}%`], ['Stability', avg('stability')], ['Danger', avg('danger')], ['Prosperity', avg('prosperity')]
   ].map(([k, v]) => `<div>${k}</div><strong>${v}</strong>`).join('');
@@ -402,9 +429,17 @@ function refreshRight() {
     ...Array.from(world.tracked).slice(0, 3).map((t) => `<li>Tracked: ${t}</li>`)
   ].join('');
 
-  ui.chronicle.innerHTML = world.chronicle.slice(0, 12).map((c) => `<li>${c}</li>`).join('');
-  ui.contracts.innerHTML = world.contracts.slice(0, 12).map(contractRow).join('');
-  ui.proclamations.innerHTML = world.proclamations.slice(0, 12).map((entry) => `<li>${entry.title} ${actionButtons('proclamations', entry.id)}</li>`).join('');
+  const showChronicle = world.mode === 'Map' || world.mode === 'Chronicle';
+  const showContracts = world.mode === 'Map' || world.mode === 'Contracts';
+  const showProclamations = world.mode === 'Map' || world.mode === 'Proclamations';
+
+  ui.chronicle.parentElement.style.display = showChronicle ? '' : 'none';
+  ui.contracts.parentElement.style.display = showContracts ? '' : 'none';
+  ui.proclamations.parentElement.style.display = showProclamations ? '' : 'none';
+
+  ui.chronicle.innerHTML = showChronicle ? world.chronicle.slice(0, 12).map((c) => `<li>${c}</li>`).join('') : '';
+  ui.contracts.innerHTML = showContracts ? world.contracts.slice(0, 12).map(contractRow).join('') : '';
+  ui.proclamations.innerHTML = showProclamations ? world.proclamations.slice(0, 12).map((entry) => `<li>${entry.title} ${actionButtons('proclamations', entry.id)}</li>`).join('') : '';
 }
 
 function updateModeUi() {
@@ -567,4 +602,12 @@ function showScreen(id) {
 
 function isScreen(id) {
   return ui[id].classList.contains('active');
+}
+
+function formatCycleClock(seconds) {
+  const clamped = Math.max(0, seconds);
+  const total = Math.floor(clamped);
+  const mm = String(Math.floor(total / 60)).padStart(2, '0');
+  const ss = String(total % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
 }

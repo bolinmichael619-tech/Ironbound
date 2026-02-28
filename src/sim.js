@@ -115,8 +115,8 @@ function tickActors(world) {
 function tickChains(world) {
   for (const chain of world.eventChains) {
     if (!chain.active) continue;
-    chain.progress += rand(world) * 1.6;
-    if (chain.progress >= 10) {
+    chain.progress += rand(world) * 0.6;
+    if (chain.progress >= 14) {
       chain.progress = 0;
       chain.stage += 1;
       const province = world.provinces[chain.provinceId];
@@ -165,7 +165,7 @@ function tickContracts(world) {
     .filter((c) => c.status === 'open' || c.status === 'accepted' || c.expiresDay + 4 >= world.day)
     .slice(-120);
 
-  if (world.day % 6 === 0) {
+  if (world.day % 18 === 0) {
     const allTypes = Object.values(CONTRACT_TYPES).flat();
     const province = pick(world, world.provinces);
     const chain = pick(world, world.eventChains);
@@ -219,14 +219,16 @@ function resolveContract(world, c) {
 
 function tickRumors(world) {
   world.rumors = world.rumors.filter((r) => r.expiresDay >= world.day).slice(0, 60);
-  if (world.day % 4 !== 0) return;
+  if (world.day % 10 !== 0) return;
 
   const province = pick(world, world.provinces);
   const actor = pick(world, world.actors);
+  const activeWar = world.wars.find((w) => w.frontlineProvinces.includes(province.id));
+  const context = activeWar ? `Warfront F${activeWar.factions[0]}-F${activeWar.factions[1]}` : `Local pressure ${province.danger.toFixed(0)}`;
   world.rumors.unshift({
     id: world.day * 10 + Math.floor(rand(world) * 9),
     title: `Whispers of ${province.name}`,
-    text: fillTemplate(pick(world, EXTENDED_TEMPLATES.rumors), { province: province.name, actor: actor.name, event: pick(world, EVENT_TYPES) }),
+    text: `${fillTemplate(pick(world, EXTENDED_TEMPLATES.rumors), { province: province.name, actor: actor.name, event: pick(world, EVENT_TYPES) })} (${context})`,
     source: pick(world, RUMOR_SOURCES),
     credibility: 30 + Math.floor(rand(world) * 70),
     provinceId: province.id,
@@ -235,7 +237,7 @@ function tickRumors(world) {
 }
 
 function tickProclamations(world) {
-  if (world.day % 12 !== 0) return;
+  if (world.day % 30 !== 0) return;
   const province = pick(world, world.provinces);
   const faction = pick(world, world.factions);
   world.proclamations.unshift({
@@ -249,10 +251,14 @@ function tickProclamations(world) {
 }
 
 function tickNarrative(world) {
-  if (world.day % 8 !== 0) return;
+  if (world.day % 22 !== 0) return;
   const province = pick(world, world.provinces);
   const faction = pick(world, world.factions);
   const actor = pick(world, world.actors);
+  const war = world.wars.find((w) => w.frontlineProvinces.includes(province.id));
+  const addendum = war
+    ? ` Frontline reports confirm supply strain (${war.supplyA.toFixed(0)}/${war.supplyB.toFixed(0)}).`
+    : ` Harvest and levy ledgers in ${province.name} show stability ${province.stability.toFixed(0)}.`;
   world.chronicle.unshift(fillTemplate(pick(world, EXTENDED_TEMPLATES.chronicle), {
     actor: actor.name,
     target: province.name,
@@ -260,19 +266,19 @@ function tickNarrative(world) {
     event: pick(world, EVENT_TYPES),
     faction: faction.name,
     deity: province.divineAlignment
-  }));
+  }) + addendum);
   world.chronicle = world.chronicle.slice(0, 160);
 }
 
 function tickBestiary(world) {
-  if (world.day % 9 !== 0 || !world.bestiary.length) return;
+  if (world.day % 24 !== 0 || !world.bestiary.length) return;
   const b = pick(world, world.bestiary);
   b.lastSeen = `P${1 + Math.floor(rand(world) * world.provinces.length)}`;
   b.completeness = clamp(b.completeness + rand(world) * 6 - 2, 5, 100);
 }
 
 function tickObituary(world) {
-  if (world.day % 17 !== 0 || rand(world) >= 0.42) return;
+  if (world.day % 40 !== 0 || rand(world) >= 0.28) return;
   const province = pick(world, world.provinces);
   world.obituary.unshift({
     id: world.day * 100 + world.obituary.length,

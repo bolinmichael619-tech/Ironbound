@@ -108,6 +108,7 @@ export function generateWorld(seed = 1337, size = 384, settings = {}) {
       slope: tectonics.slope,
       erosionMap: tectonics.erosionMap,
       terrainClass: tectonics.terrainClass,
+      orogeny: tectonics.orogeny,
       flow: hydrology.flow,
       riverMask: hydrology.riverMask,
       riverId: hydrology.riverId,
@@ -164,6 +165,7 @@ function genTectonics(size, rng, cfg) {
   const slope = new Float32Array(n);
   const erosionMap = new Float32Array(n);
   const terrainClass = new Uint8Array(n);
+  const orogeny = new Float32Array(n);
 
   const plateCount = clampInt(cfg.plateCount, 5, 12);
   const plates = Array.from({ length: plateCount }, (_, id) => {
@@ -258,6 +260,8 @@ function genTectonics(size, rng, cfg) {
     }
   }
 
+  liftOrogenicBelts(size, height, ridgeMap, stressMap, waterMask, orogeny);
+
   for (let pass = 0; pass < clampInt(cfg.erosionPasses, 0, 5); pass++) {
     thermalErosionPass(size, height, ridgeMap, waterMask, erosionMap);
   }
@@ -283,7 +287,7 @@ function genTectonics(size, rng, cfg) {
     }
   }
 
-  return { height, moistureBase, waterMask, plateIndex, stressMap, ridgeMap, slope, erosionMap, terrainClass, plates };
+  return { height, moistureBase, waterMask, plateIndex, stressMap, ridgeMap, slope, erosionMap, terrainClass, orogeny, plates };
 }
 
 function genHydrology(size, tectonics, rng, cfg) {
@@ -325,7 +329,8 @@ function genHydrology(size, tectonics, rng, cfg) {
     const y = Math.floor(i / size);
     const latNorm = Math.abs((y / (size - 1)) * 2 - 1);
     const precipProxy = clamp(moistureBase[i] * 0.7 + (1 - latNorm) * 0.3, 0, 1);
-    flow[i] = Math.max(flow[i], 1 + precipProxy * 1.8 + Math.max(0, slope[i] - 0.22) * 0.35);
+    const upliftRunoff = tectonics.orogeny ? tectonics.orogeny[i] * 0.4 : 0;
+    flow[i] = Math.max(flow[i], 1 + precipProxy * 1.8 + upliftRunoff + Math.max(0, slope[i] - 0.22) * 0.35);
 
     let best = i;
     let bestH = height[i];
@@ -1191,6 +1196,41 @@ function seedBestiary(rng) {
   }));
 }
 
+
+
+function liftOrogenicBelts(size, height, ridgeMap, stressMap, waterMask, orogeny) {
+  const n = size * size;
+  const blur = new Float32Array(n);
+
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      const i = y * size + x;
+      if (waterMask[i]) continue;
+
+      let sum = 0;
+      let wsum = 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const ni = (y + oy) * size + (x + ox);
+          const w = ox && oy ? 0.7 : 1;
+          sum += ridgeMap[ni] * w;
+          wsum += w;
+        }
+      }
+
+      const belt = clamp(sum / wsum * 0.7 + stressMap[i] * 0.3, 0, 1);
+      blur[i] = belt;
+      orogeny[i] = belt;
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    if (waterMask[i]) continue;
+    if (blur[i] < 0.12) continue;
+    const lift = Math.pow(blur[i], 1.25) * 0.085;
+    height[i] = clamp(height[i] + lift, 0, 1);
+  }
+}
 
 function thermalErosionPass(size, height, ridgeMap, waterMask, erosionMap) {
   const n = size * size;
